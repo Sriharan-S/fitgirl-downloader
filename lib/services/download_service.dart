@@ -78,6 +78,12 @@ class DownloadService {
   }) async {
     // Check if game already exists?
     // Ideally we merge, but for now simple add
+    // Prevent Duplicates
+    if (_sessions.any((s) => s.gameTitle == gameTitle)) {
+      print('Game $gameTitle already exists in queue. Skipping add.');
+      return;
+    }
+
     final session = DownloadSession.create(
       gameTitle: gameTitle,
       coverUrl: coverUrl,
@@ -375,6 +381,9 @@ class DownloadService {
       metaData:
           '$gameTitle|$coverUrl|$originalUrl', // Store original URL in metadata to map back
       displayName: fileName,
+      // Enable Progress Bar in Notification (Android)
+      // Note: This requires 'TaskNotificationConfig' which is standard in v8+
+      // If this fails compilation, we will revert to relying on updates.
     );
 
     // FIX: Re-create task with Notification Config
@@ -547,6 +556,7 @@ class DownloadService {
       try {
         final List<dynamic> jsonList = jsonDecode(jsonStr);
         _sessions = jsonList.map((e) => DownloadSession.fromJson(e)).toList();
+        notifyListeners(); // Notify UI after loading
       } catch (e) {
         print('Error loading sessions: $e');
       }

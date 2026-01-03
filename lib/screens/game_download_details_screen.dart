@@ -846,14 +846,15 @@ class _GameDownloadDetailsScreenState
                 ),
                 TextButton(
                   onPressed: () {
-                    // 1. Close dialog
-                    Navigator.pop(dialogContext);
-                    // 2. Close Details Screen immediately (Back to Downloads)
-                    if (context.mounted) {
-                      Navigator.pop(context);
-                    }
+                    // 1. Close dialog (Dialog is on Root Navigator usually)
+                    Navigator.of(dialogContext).pop();
+
+                    // 2. Navigate explicitly to Downloads screen
+                    // This is safer than popping imperative routes when GoRouter is involved
+                    // as it guarantees a valid destination.
+                    context.go('/downloads');
+
                     // 3. Perform Cancel in background
-                    // We don't await this because we want to leave the screen immediately
                     DownloadService().cancelSession(
                       session.gameTitle,
                       deleteFiles: deleteFiles,

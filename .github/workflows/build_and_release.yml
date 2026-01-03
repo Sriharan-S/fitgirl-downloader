@@ -15,9 +15,32 @@ permissions:
 
 jobs:
   # -----------------------------------------------------------------
+  # JOB 0: Calculate Version
+  # -----------------------------------------------------------------
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tagger.outputs.tag }}
+      is_prerelease: ${{ steps.tagger.outputs.is_prerelease }}
+    steps:
+      - name: Generate Tag and Name
+        id: tagger
+        run: |
+          DATE=$(date +'%Y.%m.%d')
+          SHA_SHORT=$(echo $GITHUB_SHA | cut -c1-7)
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            echo "tag=v${DATE}-dev-${SHA_SHORT}" >> $GITHUB_OUTPUT
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag=v${DATE}" >> $GITHUB_OUTPUT
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+  # -----------------------------------------------------------------
   # JOB 1: Build Android
   # -----------------------------------------------------------------
   build-android:
+    needs: get-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,25 +49,23 @@ jobs:
           channel: 'master'
           cache: true
       
-      - name: Install Dependencies
-        run: flutter pub get
-
       - name: Build Android Universal APK
-        run: flutter build apk --release
+        run: flutter pub get && flutter build apk --release
         
       - name: Rename Artifact
-        run: mv build/app/outputs/flutter-apk/app-release.apk app-android-universal.apk
+        run: mv build/app/outputs/flutter-apk/app-release.apk FitGirl-Downloader-${{ needs.get-version.outputs.version }}-android-universal.apk
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-build
-          path: app-android-universal.apk
+          path: FitGirl-Downloader-*.apk
 
   # -----------------------------------------------------------------
   # JOB 2: Build Linux
   # -----------------------------------------------------------------
   build-linux:
+    needs: get-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,18 +83,20 @@ jobs:
         run: flutter pub get && flutter build linux --release
 
       - name: Compress Build
-        run: tar -czvf app-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+        run: |
+          tar -czvf FitGirl-Downloader-${{ needs.get-version.outputs.version }}-linux-x64.tar.gz -C build/linux/x64/release/bundle .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: app-linux-x64.tar.gz
+          path: FitGirl-Downloader-*.tar.gz
 
   # -----------------------------------------------------------------
-  # JOB 3: Build Windows (Installer)
+  # JOB 3: Build Windows
   # -----------------------------------------------------------------
   build-windows:
+    needs: get-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +105,7 @@ jobs:
           channel: 'master'
           cache: true
       
-      - name: Build Windows Files
+      - name: Build Windows
         run: flutter pub get && flutter build windows --release
 
       - name: Create Installer (Inno Setup)
@@ -91,18 +114,19 @@ jobs:
           iscc windows/installer.iss
           
       - name: Rename Installer
-        run: mv build/windows/x64/installer/fitgirl_setup.exe app-windows-setup.exe
+        run: mv build/windows/x64/installer/fitgirl_setup.exe FitGirl-Downloader-${{ needs.get-version.outputs.version }}-windows-setup.exe
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: app-windows-setup.exe
+          path: FitGirl-Downloader-*.exe
 
   # -----------------------------------------------------------------
   # JOB 4: Build macOS & iOS
   # -----------------------------------------------------------------
   build-apple:
+    needs: get-version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,9 +143,9 @@ jobs:
       - name: Compress macOS Build
         run: |
           cd build/macos/Build/Products/Release
-          zip -r ../../../../../app-macos-universal.zip .
+          zip -r ../../../../../FitGirl-Downloader-${{ needs.get-version.outputs.version }}-macos-universal.zip .
       
-      - name: Build iOS (No CodeSign)
+      - name: Build iOS
         run: flutter build ios --release --no-codesign
 
       - name: Compress iOS Build
@@ -129,21 +153,19 @@ jobs:
           cd build/ios/iphoneos
           mkdir Payload
           mv Runner.app Payload/
-          zip -r ../../../app-ios-unsigned.ipa Payload
+          zip -r ../../../FitGirl-Downloader-${{ needs.get-version.outputs.version }}-ios-unsigned.ipa Payload
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: apple-builds
-          path: |
-            app-macos-universal.zip
-            app-ios-unsigned.ipa
+          path: FitGirl-Downloader-*
 
   # -----------------------------------------------------------------
   # JOB 5: Create Release
   # -----------------------------------------------------------------
   create-release:
-    needs: [build-android, build-linux, build-windows, build-apple]
+    needs: [get-version, build-android, build-linux, build-windows, build-apple]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Artifacts
@@ -154,35 +176,14 @@ jobs:
       - name: Stage Files
         run: |
           mkdir release_files
-          mv artifacts/android-build/*.apk release_files/
-          mv artifacts/linux-build/*.tar.gz release_files/
-          # FIX: Looking for .exe instead of .zip
-          mv artifacts/windows-build/*.exe release_files/
-          mv artifacts/apple-builds/* release_files/
-
-      - name: Generate Tag and Name
-        id: tagger
-        run: |
-          echo "DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
-          echo "SHA_SHORT=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
-
-      - name: Determine Prerelease
-        id: prerelease_check
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
-            echo "TAG_NAME=v${{ env.DATE }}-dev-${{ env.SHA_SHORT }}" >> $GITHUB_ENV
-          else
-            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
-            echo "TAG_NAME=v${{ env.DATE }}" >> $GITHUB_ENV
-          fi
+          find artifacts/ -type f \( -name "FitGirl-Downloader-*" \) -exec mv {} release_files/ \;
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: Release ${{ env.TAG_NAME }}
-          prerelease: ${{ env.IS_PRERELEASE }}
+          tag_name: ${{ needs.get-version.outputs.version }}
+          name: Release ${{ needs.get-version.outputs.version }}
+          prerelease: ${{ needs.get-version.outputs.is_prerelease }}
           files: release_files/*
         env:
           TOKEN: ${{ secrets.TOKEN }}

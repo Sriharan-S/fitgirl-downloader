@@ -3,7 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/router.dart';
 
-void main() {
+import 'package:fitgirl_mobile_flutter/services/download_service.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await DownloadService().initialize();
   runApp(const ProviderScope(child: MyApp()));
 }
 
