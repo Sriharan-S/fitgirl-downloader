@@ -1,49 +1,48 @@
 # Fitgirl Downloader
 
-**Fitgirl Downloader** is a powerful, feature-rich mobile download manager designed specifically for FitGirl Repacks. Built with Flutter, it offers a sleek, "Cyberpunk"-inspired interface to browse games, manage selective downloads, and track progress with real-time analytics.
+**Fitgirl Downloader** is a modern, mobile-first application designed to make browsing and downloading FitGirl Repacks easier and more manageable. It features a sleek interface, selective file downloading, and powerful queue management.
 
 ## ✨ Features
 
-### 🎮 **Discovery & Browsing**
-- **Automated Scraping**: Fetches the latest games directly from the FitGirl Repacks website.
-- **Instant Search**: Powerful search with portrait thumbnails, strict filtering (excluding trailers/no-size posts), and search history.
-- **Game Details**: View comprehensive game information, including covers, descriptions, and screenshots.
-- **Incremental Loading**: Smooth, infinite scrolling for the discover page.
+- **Easy Browsing**: Automatically fetches the latest games from FitGirl Repacks.
+- **Smart Downloads**: Select *only* the files you need (e.g., skip optional language packs).
+- **Pause & Modify**: Unique ability to pause a download, change your file selection, and resume without losing progress.
+- **Background Support**: Downloads continue even when the app is in the background.
+- **Library**: Save your favorite games to your personal library.
 
-### ⬇️ **Smart Download Management**
-- **Selective Downloading**: Choose exactly which files to download (e.g., specific language packs, optional files) to save data and space.
-- **Pause & Select**: Uniquely allows you to pause an active download session, modify your file selection (add/remove files), and resume seamlessly.
-- **Background Downloads**: Reliable background downloading with persistent notifications.
-- **Mirrors Support**: Automatically extracts direct download links from supported mirrors (FuckingFast, DataNodes) and handles Pastebin redirects.
-- **Queue System**: "Just-in-Time" scraper worker manages a sequential queue, resolving links only when needed to prevent expiration.
+## 📖 How to Use
 
-### 📊 **Analytics & library**
-- **Real-time Stats**: Track download speed (current, peak, average) and ETA.
-- **Library Management**: 'Favorites' system to save games for later.
-- **Session Tracking**: Detailed view of active, queued, and completed downloads per game.
+### 1. Finding Games
+- **Home Feed**: The main screen shows the latest repacks. Scroll down to automatically load more.
+- **Search**: Use the search tab to find specific games. You can filter results to exclude "No Size" posts or trailers.
 
-### 🎨 **Modern UI/UX**
-- **Cyberpunk Aesthetic**: styled with a vibrant dark theme, glassmorphism effects, and fluid animations.
-- **Responsive Design**: Optimized for mobile devices with intuitive navigation.
+### 2. Downloading a Game
+1.  Tap on any game to view its details (Description, Screenshots, etc.).
+2.  Tap the **Download** button (Magnet icon).
+3.  **Select Mirrors**: If multiple sources are available (Magnet, DataNodes, etc.), choose one.
+4.  **Select Files**: You will see a list of all files in the repack.
+    *   Uncheck files you don't need (like `optional-credits-video.bin` or language packs you won't use).
+    *   Tap **Download Selected**.
 
-## 🛠️ Tech Stack
+### 3. Managing Downloads
+Go to the **Downloads** tab to view your queue.
+- **Pause/Resume**: Tap the pause icon to temporarily stop a download.
+- **View Details**: Tap on a game card to see individual file progress and speed stats.
+- **Pause & Select**: (Exclusive Feature)
+    1.  Open the download details for an active game.
+    2.  Tap **"Pause and Select Files"**.
+    3.  The download will pause, and you'll be taken back to the file selection screen.
+    4.  Add or remove files from your selection.
+    5.  Confirm, and the download will resume with your new configuration!
 
-- **Framework**: [Flutter](https://flutter.dev/) (Dart)
-- **State Management**: [Riverpod](https://riverpod.dev/)
-- **Routing**: [GoRouter](https://pub.dev/packages/go_router)
-- **Networking**: `http`, `html` (parsing)
-- **Downloading**: `background_downloader`
-- **Persistence**: `shared_preferences`
-- **UI Components**: `cached_network_image`, `shimmer`, `carousel_slider`, `lucide_icons`
+### 4. Your Library
+- Tap the **Heart** icon on any game detail page to add it to your Library.
+- Access your saved games quickly from the **Library** tab.
 
 ## 🚀 Getting Started
 
-### Prerequisites
-- Flutter SDK (Latest Stable)
-- Android Studio / Xcode (for iOS)
-- Git
-
 ### Installation
+As this is a self-hosted project, you will need to build the app to install it on your device.
 
 1.  **Clone the repository**
     ```bash
@@ -51,27 +50,11 @@
     cd fitgirl-downloader
     ```
 
-2.  **Install Dependencies**
-    ```bash
-    flutter pub get
-    ```
-
-3.  **Run the App**
+2.  **Run the App**
     ```bash
     flutter run
     ```
-
-### Building for Release
-
-**Android APK:**
-```bash
-flutter build apk --release
-```
-
-**Android App Bundle:**
-```bash
-flutter build appbundle --release
-```
+    *Note: Connect your Android/iOS device via USB to install directly.*
 
 ## ⚠️ Disclaimer
 
@@ -81,13 +64,3 @@ This tool is intended for educational purposes and to provide a better user inte
 - The developer is not responsible for the content downloaded using this application.
 - Please support game developers by purchasing the games you enjoy.
 - Use this application responsibly and in accordance with your local laws and regulations.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1.  Fork the Project
-2.  Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3.  Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4.  Push to the Branch (`git push origin feature/AmazingFeature`)
-5.  Open a Pull Request
