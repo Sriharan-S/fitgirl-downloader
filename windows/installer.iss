@@ -34,7 +34,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; IMPORTANT: Ensure the Source path below matches your project structure
 Source: "..\build\windows\x64\runner\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\windows\x64\runner\release\flutter_windows.dll"; DestDir: "{app}"; Flags: ignoreversion
+; FIX: Copy ALL .dll files (includes flutter_windows.dll AND plugin DLLs)
+Source: "..\build\windows\x64\runner\release\*.dll"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "..\build\windows\x64\runner\release\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
