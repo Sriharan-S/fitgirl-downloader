@@ -23,6 +23,7 @@ OutputBaseFilename=fitgirl_setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\assets\logo.png
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
