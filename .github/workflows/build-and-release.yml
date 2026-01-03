@@ -168,7 +168,8 @@ jobs:
       - name: Create macOS archive
         run: |
           cd build/macos/Build/Products/Release
-          ditto -c -k --keepParent "fitgirl_mobile_flutter.app" ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-universal.zip
+          APP_NAME=$(ls -d *.app | head -n 1)
+          ditto -c -k --keepParent "$APP_NAME" ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-universal.zip
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
