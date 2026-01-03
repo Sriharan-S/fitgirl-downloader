@@ -1,0 +1,195 @@
+name: Multi-Platform Build & Release
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+    paths:
+      - 'lib/**'
+      - 'pubspec.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # -----------------------------------------------------------------
+  # JOB 1: Build Android
+  # -----------------------------------------------------------------
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # FIX: Changed channel to 'master' to support Dart SDK ^3.9.2
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+      
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Android Universal APK
+        run: flutter build apk --release
+        
+      - name: Rename Artifact
+        run: mv build/app/outputs/flutter-apk/app-release.apk app-android-universal.apk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: app-android-universal.apk
+
+  # -----------------------------------------------------------------
+  # JOB 2: Build Linux
+  # -----------------------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # FIX: Changed channel to 'master'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Build Linux
+        run: flutter pub get && flutter build linux --release
+
+      - name: Compress Build
+        run: tar -czvf app-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: app-linux-x64.tar.gz
+
+# -----------------------------------------------------------------
+  # JOB 3: Build Windows (Installer)
+  # -----------------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+      
+      - name: Build Windows Files
+        run: flutter pub get && flutter build windows --release
+
+      # NEW STEP: Compiles the build folder into a single setup.exe
+      - name: Create Installer (Inno Setup)
+        run: |
+          choco install innosetup
+          iscc windows/installer.iss
+          
+      - name: Rename Installer
+        run: mv build/windows/x64/installer/fitgirl_setup.exe app-windows-setup.exe
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: app-windows-setup.exe
+
+  # -----------------------------------------------------------------
+  # JOB 4: Build macOS & iOS
+  # -----------------------------------------------------------------
+  build-apple:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # FIX: Changed channel to 'master'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+          
+      - run: flutter pub get
+
+      # --- macOS ---
+      - name: Build macOS
+        run: flutter build macos --release
+
+      - name: Compress macOS Build
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r ../../../../../app-macos-universal.zip .
+      
+      # --- iOS ---
+      - name: Build iOS (No CodeSign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Compress iOS Build
+        run: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          mv Runner.app Payload/
+          zip -r ../../../app-ios-unsigned.ipa Payload
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-builds
+          path: |
+            app-macos-universal.zip
+            app-ios-unsigned.ipa
+
+  # -----------------------------------------------------------------
+  # JOB 5: Create Release
+  # -----------------------------------------------------------------
+  create-release:
+    needs: [build-android, build-linux, build-windows, build-apple]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage Files
+        run: |
+          mkdir release_files
+          mv artifacts/android-build/*.apk release_files/
+          mv artifacts/linux-build/*.tar.gz release_files/
+          mv artifacts/windows-build/*.zip release_files/
+          mv artifacts/apple-builds/* release_files/
+
+      - name: Generate Tag and Name
+        id: tagger
+        run: |
+          echo "DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+          echo "SHA_SHORT=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
+
+      - name: Determine Prerelease
+        id: prerelease_check
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+            echo "TAG_NAME=v${{ env.DATE }}-dev-${{ env.SHA_SHORT }}" >> $GITHUB_ENV
+          else
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+            echo "TAG_NAME=v${{ env.DATE }}" >> $GITHUB_ENV
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Release ${{ env.TAG_NAME }}
+          prerelease: ${{ env.IS_PRERELEASE }}
+          files: release_files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
