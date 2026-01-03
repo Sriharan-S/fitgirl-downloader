@@ -7,6 +7,7 @@ import 'package:fitgirl_mobile_flutter/widgets/game_card_vertical.dart';
 import 'package:fitgirl_mobile_flutter/widgets/header_icon_button.dart';
 import 'package:fitgirl_mobile_flutter/widgets/skeleton_game_cards.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fitgirl_mobile_flutter/services/download_service.dart';
 
 class DiscoverScreen extends StatefulWidget {
   const DiscoverScreen({super.key});
@@ -22,6 +23,16 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   void initState() {
     super.initState();
     _loadData();
+    // Check permissions on startup
+    _checkPermissions();
+  }
+
+  Future<void> _checkPermissions() async {
+    // We delay slightly to allow UI to render first
+    await Future.delayed(const Duration(seconds: 1));
+    if (mounted) {
+      await DownloadService().ensureBackgroundPermissions();
+    }
   }
 
   Future<void> _loadData() async {

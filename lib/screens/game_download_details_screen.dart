@@ -293,6 +293,38 @@ class _GameDownloadDetailsScreenState
               ),
             ),
 
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton(
+                onPressed: () {
+                  _showCancelConfirmation(context, session);
+                },
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.red),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(LucideIcons.x, color: Colors.red),
+                    SizedBox(width: 8),
+                    Text(
+                      'Cancel Download',
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
             const SizedBox(height: 24),
 
             // 3. Stats Card
@@ -754,6 +786,92 @@ class _GameDownloadDetailsScreenState
             ),
         ],
       ),
+    );
+  }
+
+  void _showCancelConfirmation(
+    BuildContext context,
+    dynamic
+    session, // Passed as dynamic or specific type, here dynamic to avoid import issues if any, but ideally typed
+  ) {
+    bool deleteFiles = false;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              title: const Text(
+                'Cancel Download?',
+                style: TextStyle(color: Colors.white),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Are you sure you want to cancel this download session?',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: deleteFiles,
+                        activeColor: Colors.red,
+                        checkColor: Colors.white,
+                        side: const BorderSide(color: Colors.grey),
+                        onChanged: (val) {
+                          setDialogState(() {
+                            deleteFiles = val ?? false;
+                          });
+                        },
+                      ),
+                      const Expanded(
+                        child: Text(
+                          'Delete downloaded items as well',
+                          style: TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('No', style: TextStyle(color: Colors.grey)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    // 1. Close dialog
+                    Navigator.pop(dialogContext);
+                    // 2. Close Details Screen immediately (Back to Downloads)
+                    if (context.mounted) {
+                      Navigator.pop(context);
+                    }
+                    // 3. Perform Cancel in background
+                    // We don't await this because we want to leave the screen immediately
+                    DownloadService().cancelSession(
+                      session.gameTitle,
+                      deleteFiles: deleteFiles,
+                    );
+                  },
+                  child: const Text(
+                    'Yes, Cancel',
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 

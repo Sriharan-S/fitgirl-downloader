@@ -6,6 +6,8 @@ on:
     paths:
       - 'lib/**'
       - 'pubspec.yaml'
+      - 'windows/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
@@ -19,8 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      # FIX: Changed channel to 'master' to support Dart SDK ^3.9.2
       - uses: subosito/flutter-action@v2
         with:
           channel: 'master'
@@ -48,8 +48,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      # FIX: Changed channel to 'master'
       - uses: subosito/flutter-action@v2
         with:
           channel: 'master'
@@ -72,14 +70,13 @@ jobs:
           name: linux-build
           path: app-linux-x64.tar.gz
 
-# -----------------------------------------------------------------
+  # -----------------------------------------------------------------
   # JOB 3: Build Windows (Installer)
   # -----------------------------------------------------------------
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      
       - uses: subosito/flutter-action@v2
         with:
           channel: 'master'
@@ -88,7 +85,6 @@ jobs:
       - name: Build Windows Files
         run: flutter pub get && flutter build windows --release
 
-      # NEW STEP: Compiles the build folder into a single setup.exe
       - name: Create Installer (Inno Setup)
         run: |
           choco install innosetup
@@ -110,8 +106,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      
-      # FIX: Changed channel to 'master'
       - uses: subosito/flutter-action@v2
         with:
           channel: 'master'
@@ -119,7 +113,6 @@ jobs:
           
       - run: flutter pub get
 
-      # --- macOS ---
       - name: Build macOS
         run: flutter build macos --release
 
@@ -128,7 +121,6 @@ jobs:
           cd build/macos/Build/Products/Release
           zip -r ../../../../../app-macos-universal.zip .
       
-      # --- iOS ---
       - name: Build iOS (No CodeSign)
         run: flutter build ios --release --no-codesign
 
@@ -164,7 +156,8 @@ jobs:
           mkdir release_files
           mv artifacts/android-build/*.apk release_files/
           mv artifacts/linux-build/*.tar.gz release_files/
-          mv artifacts/windows-build/*.zip release_files/
+          # FIX: Looking for .exe instead of .zip
+          mv artifacts/windows-build/*.exe release_files/
           mv artifacts/apple-builds/* release_files/
 
       - name: Generate Tag and Name
