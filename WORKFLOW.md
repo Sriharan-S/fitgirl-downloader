@@ -28,9 +28,10 @@ The workflow is triggered when:
 - File: `fitgirl-downloader-v{version}-android-universal.apk`
 
 #### Windows
-- **x64**: 64-bit Windows desktop application
-- File: `fitgirl-downloader-v{version}-windows-x64.zip`
+- **x64**: 64-bit Windows desktop application installer
+- File: `fitgirl-downloader-v{version}-windows-x64-setup.exe`
 - **Note**: Flutter currently only supports x64 for Windows desktop. 32-bit and ARM64 builds are not available.
+- This is a self-contained installer that includes all necessary files
 
 #### Linux
 - **x64**: 64-bit Linux desktop application

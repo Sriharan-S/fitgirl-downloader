@@ -111,15 +111,52 @@ jobs:
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Create Windows archive
+      - name: Create Inno Setup Script
         run: |
-          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x64.zip
+          $version = "${{ needs.prepare.outputs.version }}"
+          $buildNumber = "${{ needs.prepare.outputs.build_number }}"
+          
+          $innoScript = @"
+          [Setup]
+          AppName=Fitgirl Downloader
+          AppVersion=$version
+          AppPublisher=Sriharan S
+          DefaultDirName={autopf}\FitgirlDownloader
+          DefaultGroupName=Fitgirl Downloader
+          OutputDir=.
+          OutputBaseFilename=fitgirl-downloader-v$version-windows-x64-setup
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+          UninstallDisplayIcon={app}\fitgirl_mobile_flutter.exe
+
+          [Files]
+          Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+
+          [Icons]
+          Name: "{group}\Fitgirl Downloader"; Filename: "{app}\fitgirl_mobile_flutter.exe"
+          Name: "{autodesktop}\Fitgirl Downloader"; Filename: "{app}\fitgirl_mobile_flutter.exe"
+
+          [Run]
+          Filename: "{app}\fitgirl_mobile_flutter.exe"; Description: "Launch Fitgirl Downloader"; Flags: nowait postinstall skipifsilent
+          "@
+          
+          $innoScript | Out-File -FilePath "installer.iss" -Encoding ASCII
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+
+      - name: Create Windows Installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x64.zip
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x64-setup.exe
 
   # Build Linux (x64 only - Flutter limitation)
   build-linux:
@@ -289,7 +326,7 @@ jobs:
             ### Installation Instructions
             
             **Android:** Install the APK directly on your device
-            **Windows:** Extract the ZIP file and run the executable
+            **Windows:** Download and run the installer executable
             **Linux:** Extract the tar.gz file and run the executable
             **macOS:** Extract the ZIP file and move the app to Applications folder
             **iOS:** Requires signing with your own certificate before installation
@@ -302,7 +339,7 @@ jobs:
             - **macOS**: Universal binary (includes both Intel x64 and Apple Silicon ARM64)
           files: |
             artifacts/android-universal-apk/*.apk
-            artifacts/windows-x64/*.zip
+            artifacts/windows-x64/*.exe
             artifacts/linux-x64/*.tar.gz
             artifacts/macos-universal/*.zip
             artifacts/ios-unsigned/*.zip
