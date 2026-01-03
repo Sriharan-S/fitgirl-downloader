@@ -1,0 +1,449 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'lib/**'
+
+jobs:
+  # Extract version from pubspec.yaml for release tagging
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      build_number: ${{ steps.get_version.outputs.build_number }}
+      is_prerelease: ${{ steps.check_branch.outputs.is_prerelease }}
+      tag_name: ${{ steps.get_version.outputs.tag_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from pubspec.yaml
+        id: get_version
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1 | xargs)
+          BUILD_NUMBER=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f2 | xargs)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "tag_name=v${VERSION}+${BUILD_NUMBER}" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION, build: $BUILD_NUMBER"
+
+      - name: Check if pre-release
+        id: check_branch
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "This is a pre-release from dev branch"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "This is a stable release from main branch"
+          fi
+
+  # Build Android Universal APK
+  build-android:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Universal APK
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             fitgirl-downloader-v${{ needs.prepare.outputs.version }}-android-universal.apk
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-universal-apk
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-android-universal.apk
+
+  # Build Windows x64
+  build-windows-x64:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows x64
+        run: flutter build windows --release
+
+      - name: Create Windows x64 archive
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x64.zip
+
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x64.zip
+
+  # Build Windows x86 (32-bit)
+  build-windows-x86:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows x86
+        run: flutter build windows --release --target-platform windows-x86
+
+      - name: Create Windows x86 archive
+        run: |
+          Compress-Archive -Path build/windows/x86/runner/Release/* -DestinationPath fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x86.zip
+
+      - name: Upload Windows x86 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-x86.zip
+
+  # Build Windows ARM64
+  build-windows-arm64:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows ARM64
+        run: flutter build windows --release --target-platform windows-arm64
+
+      - name: Create Windows ARM64 archive
+        run: |
+          Compress-Archive -Path build/windows/arm64/runner/Release/* -DestinationPath fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-arm64.zip
+
+      - name: Upload Windows ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-windows-arm64.zip
+
+  # Build Linux x64
+  build-linux-x64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Linux x64
+        run: flutter build linux --release
+
+      - name: Create Linux x64 archive
+        run: |
+          cd build/linux/x64/release/bundle
+          tar -czf ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-linux-x64.tar.gz *
+
+      - name: Upload Linux x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-linux-x64.tar.gz
+
+  # Build Linux ARM64
+  build-linux-arm64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Linux ARM64
+        run: flutter build linux --release --target-platform linux-arm64
+
+      - name: Create Linux ARM64 archive
+        run: |
+          cd build/linux/arm64/release/bundle
+          tar -czf ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-linux-arm64.tar.gz *
+
+      - name: Upload Linux ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-linux-arm64.tar.gz
+
+  # Build macOS Universal (includes x64 and ARM64)
+  build-macos-universal:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build macOS Universal
+        run: flutter build macos --release
+
+      - name: Create macOS Universal archive
+        run: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --keepParent "fitgirl_mobile_flutter.app" ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-universal.zip
+
+      - name: Upload macOS Universal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-universal.zip
+
+  # Build macOS x64
+  build-macos-x64:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build macOS x64
+        run: flutter build macos --release --target-platform darwin-x64
+
+      - name: Create macOS x64 archive
+        run: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --keepParent "fitgirl_mobile_flutter.app" ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-x64.zip
+
+      - name: Upload macOS x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-x64.zip
+
+  # Build macOS ARM64
+  build-macos-arm64:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build macOS ARM64
+        run: flutter build macos --release --target-platform darwin-arm64
+
+      - name: Create macOS ARM64 archive
+        run: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --keepParent "fitgirl_mobile_flutter.app" ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-arm64.zip
+
+      - name: Upload macOS ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-arm64.zip
+
+  # Build iOS
+  build-ios:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build iOS (no signing)
+        run: flutter build ios --release --no-codesign
+
+      - name: Create iOS archive
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r ../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-ios-unsigned.zip Payload
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned
+          path: fitgirl-downloader-v${{ needs.prepare.outputs.version }}-ios-unsigned.zip
+
+  # Create Release and Upload All Artifacts
+  release:
+    needs: 
+      - prepare
+      - build-android
+      - build-windows-x64
+      - build-windows-x86
+      - build-windows-arm64
+      - build-linux-x64
+      - build-linux-arm64
+      - build-macos-universal
+      - build-macos-x64
+      - build-macos-arm64
+      - build-ios
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          name: Release ${{ needs.prepare.outputs.tag_name }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease }}
+          body: |
+            ## Fitgirl Downloader ${{ needs.prepare.outputs.tag_name }}
+            
+            **Release Type:** ${{ needs.prepare.outputs.is_prerelease == 'true' && 'Pre-release (dev)' || 'Stable (main)' }}
+            **Version:** ${{ needs.prepare.outputs.version }}
+            **Build Number:** ${{ needs.prepare.outputs.build_number }}
+            
+            ### Downloads
+            
+            #### Android
+            - Universal APK (armeabi-v7a, arm64-v8a, x86_64)
+            
+            #### Windows
+            - 64-bit (x64)
+            - 32-bit (x86)
+            - ARM64
+            
+            #### Linux
+            - x64
+            - ARM64
+            
+            #### macOS
+            - Universal (x64 + ARM64)
+            - x64 only
+            - ARM64 only
+            
+            #### iOS
+            - Unsigned IPA (requires signing for installation)
+            
+            ### Installation Instructions
+            
+            **Android:** Install the APK directly on your device
+            **Windows:** Extract the ZIP file and run the executable
+            **Linux:** Extract the tar.gz file and run the executable
+            **macOS:** Extract the ZIP file and move the app to Applications folder
+            **iOS:** Requires signing with your own certificate before installation
+          files: |
+            artifacts/android-universal-apk/*.apk
+            artifacts/windows-x64/*.zip
+            artifacts/windows-x86/*.zip
+            artifacts/windows-arm64/*.zip
+            artifacts/linux-x64/*.tar.gz
+            artifacts/linux-arm64/*.tar.gz
+            artifacts/macos-universal/*.zip
+            artifacts/macos-x64/*.zip
+            artifacts/macos-arm64/*.zip
+            artifacts/ios-unsigned/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
