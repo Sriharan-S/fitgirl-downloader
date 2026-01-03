@@ -12,6 +12,8 @@ jobs:
   # Extract version from pubspec.yaml for release tagging
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       build_number: ${{ steps.get_version.outputs.build_number }}
@@ -52,6 +54,8 @@ jobs:
   build-android:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -89,6 +93,8 @@ jobs:
   build-windows:
     needs: prepare
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -119,6 +125,8 @@ jobs:
   build-linux:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -155,6 +163,8 @@ jobs:
   build-macos:
     needs: prepare
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -193,6 +203,8 @@ jobs:
   build-ios:
     needs: prepare
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -232,6 +244,8 @@ jobs:
       - build-macos
       - build-ios
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
