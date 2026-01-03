@@ -71,7 +71,7 @@ final router = GoRouter(
       builder: (context, state) {
         final extra = state.extra as Map<String, dynamic>?;
         if (extra == null) {
-          // Ideally handle error or redirect
+          // Ideally handle error or  redirect
           return const Scaffold(body: Center(child: Text('Error: No files')));
         }
         return SelectFilesScreen(
