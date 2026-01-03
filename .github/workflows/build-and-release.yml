@@ -142,15 +142,20 @@ jobs:
           Filename: "{app}\fitgirl_mobile_flutter.exe"; Description: "Launch Fitgirl Downloader"; Flags: nowait postinstall skipifsilent
           "@
           
-          $innoScript | Out-File -FilePath "installer.iss" -Encoding ASCII
+          $innoScript | Out-File -FilePath "installer.iss" -Encoding UTF8
 
       - name: Install Inno Setup
         run: |
-          choco install innosetup -y
+          choco install innosetup --version=6.2.2 -y
 
       - name: Create Windows Installer
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-Not (Test-Path $isccPath)) {
+            Write-Error "Inno Setup compiler not found at $isccPath"
+            exit 1
+          }
+          & $isccPath installer.iss
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
