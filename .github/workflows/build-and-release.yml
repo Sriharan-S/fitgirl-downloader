@@ -24,8 +24,14 @@ jobs:
       - name: Extract version from pubspec.yaml
         id: get_version
         run: |
-          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1 | xargs)
-          BUILD_NUMBER=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f2 | xargs)
+          VERSION_LINE=$(grep '^version:' pubspec.yaml | sed 's/version: //' | xargs)
+          if [[ "$VERSION_LINE" == *"+"* ]]; then
+            VERSION=$(echo "$VERSION_LINE" | cut -d'+' -f1)
+            BUILD_NUMBER=$(echo "$VERSION_LINE" | cut -d'+' -f2)
+          else
+            VERSION="$VERSION_LINE"
+            BUILD_NUMBER="1"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "tag_name=v${VERSION}+${BUILD_NUMBER}" >> $GITHUB_OUTPUT
@@ -126,7 +132,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-dev
 
       - name: Install dependencies
         run: flutter pub get
@@ -137,7 +143,7 @@ jobs:
       - name: Create Linux archive
         run: |
           cd build/linux/x64/release/bundle
-          tar -czf ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-linux-x64.tar.gz *
+          tar -czf "$GITHUB_WORKSPACE/fitgirl-downloader-v${{ needs.prepare.outputs.version }}-linux-x64.tar.gz" *
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -168,8 +174,14 @@ jobs:
       - name: Create macOS archive
         run: |
           cd build/macos/Build/Products/Release
-          APP_NAME=$(ls -d *.app | head -n 1)
-          ditto -c -k --keepParent "$APP_NAME" ../../../../../fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-universal.zip
+          APP_NAME=$(ls -d *.app 2>/dev/null | head -n 1)
+          if [ -z "$APP_NAME" ]; then
+            echo "Error: No .app bundle found in build directory"
+            ls -la
+            exit 1
+          fi
+          echo "Found app bundle: $APP_NAME"
+          ditto -c -k --keepParent "$APP_NAME" "$GITHUB_WORKSPACE/fitgirl-downloader-v${{ needs.prepare.outputs.version }}-macos-universal.zip"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
