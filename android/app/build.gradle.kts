@@ -35,7 +35,7 @@ signingConfigs {
             storeFile = keystoreFile
             storePassword = System.getenv("STORE_PASSWORD") ?: "PASSWORD"
             keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "PAS"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "PASSWORD"
         }
     }
 
