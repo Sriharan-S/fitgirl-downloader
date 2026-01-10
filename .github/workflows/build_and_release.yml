@@ -49,7 +49,15 @@ jobs:
           channel: 'master'
           cache: true
       
+      - name: Download Android Keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+      
       - name: Build Android Universal APK
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: flutter pub get && flutter build apk --release
         
       - name: Rename Artifact
