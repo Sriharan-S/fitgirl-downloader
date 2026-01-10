@@ -13,7 +13,8 @@
         android:label="Fitgirl Downloader"
         android:name="${applicationName}"
         android:requestLegacyExternalStorage="true"
-        android:icon="@mipmap/launcher_icon">
+        android:icon="@mipmap/launcher_icon"
+        android:appCategory="game">
         <activity
             android:name=".MainActivity"
             android:exported="true"
