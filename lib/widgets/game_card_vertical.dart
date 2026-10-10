@@ -1,111 +1,122 @@
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/material.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/models/game.dart';
-import 'package:go_router/go_router.dart';
+import 'package:fitgirl_mobile_flutter/router.dart';
+import 'package:fitgirl_mobile_flutter/widgets/hoverable.dart';
+import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+/// Portrait cover card used in grids. Sized by its parent grid cell.
 class GameCardVertical extends StatelessWidget {
   final Game game;
 
   const GameCardVertical({super.key, required this.game});
 
+  /// Width/height ratio grids should use for this card.
+  static const double aspectRatio = 0.6;
+
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => context.push('/game-details?id=${game.id}'),
-      child: Container(
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceDark,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppTheme.surfaceHighlight),
-        ),
-        padding: const EdgeInsets.all(8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Image Container
-            Expanded(
-              child: Stack(
-                children: [
-                  Container(
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(4),
-                      color: Colors.grey[800],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: CachedNetworkImage(
-                        imageUrl: game.coverUrl,
-                        fit: BoxFit.cover,
-                        placeholder: (context, url) =>
-                            Container(color: AppTheme.surfaceHighlight),
-                        errorWidget: (context, url, error) =>
-                            const Icon(Icons.error),
-                      ),
-                    ),
-                  ),
-                  if (game.genre != null)
-                    Positioned(
-                      top: 8,
-                      left: 8,
+    final genre = game.genre?.split(',').first.trim();
+    return HoverCard(
+      onTap: () => openGame(context, game),
+      tooltip: game.title,
+      padding: const EdgeInsets.all(8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: game.coverUrl.isEmpty
+                      ? _placeholder()
+                      : CachedNetworkImage(
+                          imageUrl: game.coverUrl,
+                          fit: BoxFit.cover,
+                          memCacheWidth: 400,
+                          placeholder: (_, _) =>
+                              Container(color: AppTheme.surfaceHighlight),
+                          errorWidget: (_, _, _) => _placeholder(),
+                        ),
+                ),
+                if (genre != null && genre.isNotEmpty)
+                  Positioned(
+                    top: 6,
+                    left: 6,
+                    right: 6,
+                    child: Align(
+                      alignment: Alignment.topLeft,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 6,
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.7),
+                          color: Colors.black.withValues(alpha: 0.75),
                           borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: Colors.white10),
                         ),
                         child: Text(
-                          game.genre!,
+                          genre,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 10,
-                            fontWeight: FontWeight.w500,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                     ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            // Title
-            Text(
-              game.title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 4),
-            // Metadata
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  game.size,
-                  style: const TextStyle(color: Colors.grey, fontSize: 11),
-                ),
-                if (game.timeAgo != null)
-                  Text(
-                    game.timeAgo!,
-                    style: const TextStyle(
-                      color: AppTheme.primaryGreen,
-                      fontSize: 10,
-                    ),
                   ),
               ],
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            game.title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              height: 1.25,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              const Icon(
+                LucideIcons.hardDrive,
+                size: 11,
+                color: AppTheme.primaryGreen,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  game.size,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
+
+  Widget _placeholder() => Container(
+    color: AppTheme.surfaceHighlight,
+    child: const Center(
+      child: Icon(LucideIcons.gamepad2, color: Colors.white24, size: 32),
+    ),
+  );
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as parser;
 import 'package:html/dom.dart';
@@ -33,123 +34,120 @@ class ScraperService {
       // Limit to first 10 popular games
       final topElements = elements.take(10);
 
+      final links = <String>[];
       for (var element in topElements) {
         final link = element.attributes['href'];
-        final title = element.attributes['title'] ?? 'Unknown Title';
+        final lowerTitle = (element.attributes['title'] ?? '').toLowerCase();
+        if (link != null &&
+            link.contains('fitgirl-repacks.site') &&
+            !lowerTitle.contains('upcoming repacks') &&
+            !lowerTitle.contains('repack updated') &&
+            !links.contains(link)) {
+          links.add(link);
+        }
+      }
 
-        if (link != null && link.contains('fitgirl-repacks.site')) {
-          final lowerTitle = title.toLowerCase();
-          if (!lowerTitle.contains('upcoming repacks') &&
-              !lowerTitle.contains('repack updated')) {
-            try {
-              final gameDetails = await getGameDetails(link);
-              if (gameDetails != null) {
-                yield gameDetails.copyWith(genre: 'Popular');
-              }
-            } catch (e) {
-              print('Error fetching popular game details for $title: $e');
-            }
-          }
+      // Fetch details in parallel batches, yield in popularity order.
+      const batchSize = 4;
+      for (var i = 0; i < links.length; i += batchSize) {
+        final batch = links.skip(i).take(batchSize).map(getGameDetails);
+        for (final game in await Future.wait(batch)) {
+          if (game != null) yield game.copyWith(genre: 'Popular');
         }
       }
     } catch (e) {
-      print('Error streaming popular games: $e');
+      debugPrint('Error streaming popular games: $e');
     }
   }
 
-  /// Streams newly added games one by one
-  Stream<Game> streamNewlyAddedGames() async* {
-    try {
-      // 1. Fetch sitemap index
-      final indexResponse = await http.get(Uri.parse(_sitemapIndexUrl));
-      if (indexResponse.statusCode != 200)
+  // Newest-first post URLs gathered from the sitemaps, for paging.
+  List<String>? _sitemapUrls;
+  int _sitemapCursor = 0;
+  final List<String> _recentPostUrls = [];
+
+  Future<void> _ensureRecentPosts(int needed) async {
+    if (_sitemapUrls == null) {
+      final indexResponse = await http
+          .get(Uri.parse(_sitemapIndexUrl))
+          .timeout(const Duration(seconds: 20));
+      if (indexResponse.statusCode != 200) {
         throw Exception('Failed to load sitemap index');
-
+      }
       final indexDoc = XmlDocument.parse(indexResponse.body);
-      final sitemaps = indexDoc.findAllElements('sitemap');
+      final locs = indexDoc
+          .findAllElements('sitemap')
+          .map((n) => n.findElements('loc').firstOrNull?.innerText)
+          .whereType<String>()
+          .where((loc) => loc.contains('post-sitemap'))
+          .toList();
+      locs.sort(
+        (a, b) => _extractSitemapIndex(b).compareTo(_extractSitemapIndex(a)),
+      );
+      _sitemapUrls = locs;
+    }
 
-      // 2. Find the last post-sitemap
-      final postSitemaps = sitemaps.where((node) {
-        final loc = node.findElements('loc').firstOrNull?.innerText;
-        return loc != null && loc.contains('post-sitemap');
-      }).toList();
-
-      String? lastPostSitemapUrl;
-
-      if (postSitemaps.isNotEmpty) {
-        postSitemaps.sort((a, b) {
-          final aLoc = a.findElements('loc').first.innerText;
-          final bLoc = b.findElements('loc').first.innerText;
-          return _extractSitemapIndex(
-            aLoc,
-          ).compareTo(_extractSitemapIndex(bLoc));
-        });
-
-        lastPostSitemapUrl = postSitemaps.last
-            .findElements('loc')
-            .first
-            .innerText;
-      }
-
-      if (lastPostSitemapUrl != null) {
-        // 3. Fetch the last post sitemap
-        final mapResponse = await http.get(Uri.parse(lastPostSitemapUrl));
-        if (mapResponse.statusCode != 200)
-          throw Exception('Failed to load post sitemap');
-
-        final mapDoc = XmlDocument.parse(mapResponse.body);
-        final urls = mapDoc.findAllElements('url');
-
-        // 4. Get the last N URLs (stream top 10 valid ones)
-        final recentUrls = urls.toList().reversed.take(15);
-        final seenUrls = <String>{};
-        int yieldedCount = 0;
-
-        for (var urlNode in recentUrls) {
-          if (yieldedCount >= 10) break;
-
-          final loc = urlNode.findElements('loc').firstOrNull?.innerText;
-
-          if (loc != null &&
-              !loc.contains('updates-digest') &&
-              !loc.contains('upcoming-repacks') &&
-              !loc.contains('repack-updated') &&
-              !seenUrls.contains(loc)) {
-            seenUrls.add(loc);
-
-            try {
-              final game = await getGameDetails(loc);
-              if (game != null) {
-                final lowerTitle = game.title.toLowerCase();
-                if (!lowerTitle.contains('upcoming repacks') &&
-                    !lowerTitle.contains('repack updated')) {
-                  yield game;
-                  yieldedCount++;
-                }
-              }
-            } catch (e) {
-              print('Error scraping game $loc: $e');
-            }
-          }
+    final seen = _recentPostUrls.toSet();
+    while (_recentPostUrls.length < needed &&
+        _sitemapCursor < _sitemapUrls!.length) {
+      final mapResponse = await http
+          .get(Uri.parse(_sitemapUrls![_sitemapCursor++]))
+          .timeout(const Duration(seconds: 20));
+      if (mapResponse.statusCode != 200) continue;
+      final mapDoc = XmlDocument.parse(mapResponse.body);
+      final urls = mapDoc
+          .findAllElements('url')
+          .map((n) => n.findElements('loc').firstOrNull?.innerText)
+          .whereType<String>()
+          .toList()
+          .reversed;
+      for (final loc in urls) {
+        if (loc.contains('updates-digest') ||
+            loc.contains('upcoming-repacks') ||
+            loc.contains('repack-updated') ||
+            loc.trim() == '$_baseUrl/' ||
+            seen.contains(loc)) {
+          continue;
         }
+        seen.add(loc);
+        _recentPostUrls.add(loc);
       }
-    } catch (e) {
-      print('Error streaming newly added games: $e');
     }
   }
 
-  // Keep existing Future based methods if needed, or replace them.
-  // For now, I'll keep the old ones commented out or just overwrite them if I replace the whole block.
-  // The Instruction says "StartLine: 22", effectively replacing `getPopularGames` and `getNewlyAddedGames`.
+  /// Streams newly added games, newest first. Use [offset] to page.
+  /// Pages are fetched in parallel but yielded in order.
+  Stream<Game> streamNewlyAddedGames({int offset = 0, int count = 12}) async* {
+    try {
+      if (offset == 0) {
+        _sitemapUrls = null;
+        _sitemapCursor = 0;
+        _recentPostUrls.clear();
+      }
+      await _ensureRecentPosts(offset + count);
+      final slice = _recentPostUrls.skip(offset).take(count).toList();
 
-  // Actually, I will just add these new methods alongside the old ones to be safe,
-  // OR replace the old ones entirely if I'm sure nothing else uses them.
-  // SearchScreen uses `searchGames`. DiscoverScreen uses these.
-  // Since I am replacing the block from line 22 to 161 (which covers both getPopularGames and getNewlyAddedGames),
-  // I am effectively REPLACING them with the streaming versions.
-  // BUT the return types are different (Future<List> vs Stream), so I should rename them or update callsites.
-  // I will rename them to `stream...` but maybe keep `get...` as wrappers if needed?
-  // No, the user wants streaming. I'll replace them with `stream...` methods.
+      const batchSize = 4;
+      for (var i = 0; i < slice.length; i += batchSize) {
+        final batch = slice.skip(i).take(batchSize).map(getGameDetails);
+        for (final game in await Future.wait(batch)) {
+          if (game == null) continue;
+          final lowerTitle = game.title.toLowerCase();
+          if (lowerTitle.contains('upcoming repacks') ||
+              lowerTitle.contains('repack updated')) {
+            continue;
+          }
+          yield game;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error streaming newly added games: $e');
+    }
+  }
+
+  /// Whether more "newly added" pages may be available after [loaded] posts.
+  bool hasMoreNewlyAdded(int loaded) =>
+      loaded < _recentPostUrls.length ||
+      _sitemapCursor < (_sitemapUrls?.length ?? 1);
 
   int _extractSitemapIndex(String url) {
     // Extract number from post-sitemapX.xml
@@ -164,24 +162,26 @@ class ScraperService {
 
   /// Scrapes details for a single game page
   Future<Game?> getGameDetails(String url) async {
-    print('ScraperService: Fetching $url');
+    debugPrint('ScraperService: Fetching $url');
     try {
       final response = await http
           .get(Uri.parse(url))
           .timeout(const Duration(seconds: 15));
-      print('ScraperService: Response status for $url: ${response.statusCode}');
+      debugPrint(
+        'ScraperService: Response status for $url: ${response.statusCode}',
+      );
 
       if (response.statusCode != 200) {
-        print('ScraperService: Failed with status ${response.statusCode}');
+        debugPrint('ScraperService: Failed with status ${response.statusCode}');
         return null;
       }
 
       final document = parser.parse(response.body);
-      print('ScraperService: Document parsed');
+      debugPrint('ScraperService: Document parsed');
 
       final content = document.querySelector('.entry-content');
       if (content == null) {
-        print('ScraperService: content is null');
+        debugPrint('ScraperService: content is null');
       }
 
       // Title
@@ -193,8 +193,7 @@ class ScraperService {
       final coverNode =
           content?.querySelector('img.alignleft') ??
           content?.querySelector('img');
-      final coverUrl =
-          coverNode?.attributes['src'] ?? 'https://via.placeholder.com/300x400';
+      final coverUrl = coverNode?.attributes['src'] ?? '';
 
       // Size
       // Extract from "Original Size: ... Repack Size: ..." text usually in the first paragraph or generic text
@@ -394,7 +393,7 @@ class ScraperService {
           }
         }
       } catch (e) {
-        print('Error extracting screenshots: $e');
+        debugPrint('Error extracting screenshots: $e');
       }
 
       // Upload Date
@@ -423,14 +422,14 @@ class ScraperService {
         screenshots: screenshots,
       );
     } catch (e) {
-      print('Failed to scrape details for $url: $e');
+      debugPrint('Failed to scrape details for $url: $e');
       return null;
     }
   }
 
   /// Search for games matching the query
   Future<List<Game>> searchGames(String query) async {
-    print('ScraperService: Searching for "$query"');
+    debugPrint('ScraperService: Searching for "$query"');
     try {
       final url = '$_baseUrl/?s=${Uri.encodeComponent(query)}';
       final response = await http
@@ -499,14 +498,14 @@ class ScraperService {
       }
       return games;
     } catch (e) {
-      print('Error searching games: $e');
+      debugPrint('Error searching games: $e');
       return [];
     }
   }
 
   /// Fetches file list from a mirror/pastebin page
   Future<List<String>> getMirrorFileList(String url) async {
-    print('ScraperService: Fetching file list from $url');
+    debugPrint('ScraperService: Fetching file list from $url');
     try {
       final response = await http
           .get(Uri.parse(url))
@@ -547,14 +546,14 @@ class ScraperService {
 
       return links;
     } catch (e) {
-      print('Error scraping file list: $e');
+      debugPrint('Error scraping file list: $e');
       return [];
     }
   }
 
   /// Extracts the direct download link from a supported mirror (FuckingFast, DataNodes)
   Future<String?> getDirectDownloadLink(String url) async {
-    print('ScraperService: Extracting direct link for $url');
+    debugPrint('ScraperService: Extracting direct link for $url');
     if (url.contains('fuckingfast.co')) {
       return _getFuckingFastLink(url);
     } else if (url.contains('datanodes.to')) {
@@ -591,7 +590,7 @@ class ScraperService {
       final match = regex.firstMatch(response.body);
       return match?.group(0);
     } catch (e) {
-      print('Error parsing FuckingFast link: $e');
+      debugPrint('Error parsing FuckingFast link: $e');
     }
     return null;
   }
@@ -619,14 +618,14 @@ class ScraperService {
       final btnMatch = btnRegex.firstMatch(response.body);
       if (btnMatch != null) return btnMatch.group(1);
     } catch (e) {
-      print('Error parsing DataNodes link: $e');
+      debugPrint('Error parsing DataNodes link: $e');
     }
     return null;
   }
 
   /// Extracts FuckingFast/DataNodes links from a Pastebin page (e.g., pastefg.hermietkreeft.site)
   Future<List<String>> getPastebinLinks(String url) async {
-    print('ScraperService: Fetching pastebin links from $url');
+    debugPrint('ScraperService: Fetching pastebin links from $url');
     try {
       final response = await http
           .get(
@@ -640,7 +639,7 @@ class ScraperService {
           )
           .timeout(const Duration(seconds: 15));
 
-      print(
+      debugPrint(
         'ScraperService: Pastebin response status: ${response.statusCode}, body length: ${response.body.length}',
       );
 
@@ -676,7 +675,7 @@ class ScraperService {
       // Fallback: search in text content if no <a> tags found (sometimes plain text)
       // (This is less likely for clickable links but possible for simple pastes)
       if (links.isEmpty) {
-        print(
+        debugPrint(
           'ScraperService: No <a> tags matches found, checking raw text...',
         );
         final regex = RegExp(
@@ -691,10 +690,10 @@ class ScraperService {
         }
       }
 
-      print('ScraperService: Found ${links.length} links');
+      debugPrint('ScraperService: Found ${links.length} links');
       return links;
     } catch (e) {
-      print('Error scraping pastebin links: $e');
+      debugPrint('Error scraping pastebin links: $e');
       return [];
     }
   }

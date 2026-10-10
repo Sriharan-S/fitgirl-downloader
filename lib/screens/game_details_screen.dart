@@ -1,146 +1,118 @@
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:carousel_slider/carousel_slider.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
-import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
-import 'package:fitgirl_mobile_flutter/models/game.dart';
-import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
-import 'package:fitgirl_mobile_flutter/services/favorites_service.dart';
-import 'package:fitgirl_mobile_flutter/services/download_service.dart';
-import 'package:fitgirl_mobile_flutter/widgets/game_details_skeleton.dart';
-import 'package:fitgirl_mobile_flutter/widgets/download_option_tile.dart';
-import 'package:fitgirl_mobile_flutter/widgets/success_action_dialog.dart';
-import 'package:lucide_icons/lucide_icons.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'dart:async';
 import 'dart:ui';
 
-class GameDetailsScreen extends StatefulWidget {
-  final String? gameId;
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:carousel_slider/carousel_slider.dart';
+import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
+import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
+import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
+import 'package:fitgirl_mobile_flutter/models/download_session.dart';
+import 'package:fitgirl_mobile_flutter/models/game.dart';
+import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
+import 'package:fitgirl_mobile_flutter/router.dart';
+import 'package:fitgirl_mobile_flutter/services/download_service.dart';
+import 'package:fitgirl_mobile_flutter/services/favorites_service.dart';
+import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
+import 'package:fitgirl_mobile_flutter/widgets/download_option_tile.dart';
+import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
+import 'package:fitgirl_mobile_flutter/widgets/game_details_skeleton.dart';
+import 'package:fitgirl_mobile_flutter/widgets/success_action_dialog.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-  const GameDetailsScreen({super.key, this.gameId});
+class GameDetailsScreen extends ConsumerStatefulWidget {
+  final String? gameId; // The game's page URL
+  final Game? initialGame;
+
+  const GameDetailsScreen({super.key, this.gameId, this.initialGame});
 
   @override
-  State<GameDetailsScreen> createState() => _GameDetailsScreenState();
+  ConsumerState<GameDetailsScreen> createState() => _GameDetailsScreenState();
 }
 
-class _GameDetailsScreenState extends State<GameDetailsScreen> {
+class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
   Game? _game;
   bool _isLoading = true;
-  bool _isFavorite = false; // Add state
-  int _currentCarouselIndex = 0;
-  bool _isDescriptionExpanded = false;
-  bool _isAutoPlay = true;
-  Timer? _autoPlayTimer;
+  bool _isFavorite = false;
+  bool _descriptionExpanded = false;
 
-  @override
-  void dispose() {
-    _autoPlayTimer?.cancel();
-    super.dispose();
-  }
+  String? get _url => widget.gameId ?? widget.initialGame?.url;
 
   @override
   void initState() {
     super.initState();
-    _loadGameDetails();
+    _load();
   }
 
-  Future<void> _loadGameDetails() async {
-    // ... (existing null check)
-
-    try {
-      final scraper = ScraperService();
-      // ... (fetching game)
-      final game = await scraper.getGameDetails(widget.gameId!);
-
-      if (mounted) {
-        bool isFav = false;
-        if (game != null) {
-          isFav = await FavoritesService().isFavorite(game.url);
-        }
-
-        setState(() {
-          _game = game;
-          _isLoading = false;
-          _isFavorite = isFav;
-        });
-
-        if (game != null &&
-            (game.genre?.toLowerCase().contains('adult') ?? false)) {
-          _showAdultContentWarning();
-        }
-      }
-    } catch (e) {
-      // ... (error handling)
+  Future<void> _load() async {
+    final url = _url;
+    if (url == null || url.isEmpty) {
+      setState(() => _isLoading = false);
+      return;
     }
+    setState(() => _isLoading = true);
+    final game = await ScraperService().getGameDetails(url);
+    final isFav = game != null && await FavoritesService().isFavorite(game.url);
+    if (!mounted) return;
+    setState(() {
+      _game = game;
+      _isFavorite = isFav;
+      _isLoading = false;
+      _descriptionExpanded = context.isWide;
+    });
+    if (game?.genre?.toLowerCase().contains('adult') ?? false) {
+      _showAdultContentWarning();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
+
+  void _snack(String text, {SnackBarAction? action}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text), action: action));
   }
 
   Future<void> _toggleFavorite() async {
-    if (_game == null) return;
-
-    // Optimistic update
-    setState(() {
-      _isFavorite = !_isFavorite;
-    });
-
+    final game = _game;
+    if (game == null) return;
+    final adding = !_isFavorite;
+    setState(() => _isFavorite = adding);
     try {
-      if (_isFavorite) {
-        await FavoritesService().addFavorite(_game!);
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Added to Library')));
-        }
+      if (adding) {
+        await FavoritesService().addFavorite(game);
+        _snack('Added to Library');
       } else {
-        await FavoritesService().removeFavorite(_game!.url);
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Removed from Library')));
-        }
+        await FavoritesService().removeFavorite(game.url);
+        _snack('Removed from Library');
       }
-    } catch (e) {
-      // Revert if error
-      if (mounted) {
-        setState(() {
-          _isFavorite = !_isFavorite;
-        });
-      }
+    } catch (_) {
+      if (mounted) setState(() => _isFavorite = !adding);
     }
   }
 
-  Future<void> _launchUrl(String url) async {
-    final uri = Uri.parse(url);
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not launch $url')));
-      }
-    }
+  Future<void> _launch(String url) async {
+    final ok = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok) _snack('Could not open $url');
   }
 
   void _copyMagnet(String magnet) {
     Clipboard.setData(ClipboardData(text: magnet));
     showDialog(
       context: context,
-      builder: (c) => const SuccessActionDialog(
-        title: 'Magnet Link Copied',
-        subtitle: 'The magnet link has been copied to your clipboard.',
+      builder: (_) => const SuccessActionDialog(
+        title: 'Magnet link copied',
+        subtitle: 'Paste it into your torrent client.',
         icon: LucideIcons.link,
-      ),
-    );
-  }
-
-  void _downloadTorrent(String url) {
-    // Simulate download
-    showDialog(
-      context: context,
-      builder: (c) => const SuccessActionDialog(
-        title: 'Torrent File Saved',
-        subtitle: 'The .torrent file has been saved to your downloads folder.',
-        icon: LucideIcons.fileDown,
       ),
     );
   }
@@ -149,49 +121,37 @@ class _GameDetailsScreenState extends State<GameDetailsScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => BackdropFilter(
+      builder: (dialogContext) => BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: AlertDialog(
-          backgroundColor: AppTheme.surfaceDark,
           title: const Row(
             children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.red),
+              Icon(Icons.warning_amber_rounded, color: AppTheme.danger),
               SizedBox(width: 8),
-              Text('NSFW Content', style: TextStyle(color: Colors.red)),
+              Text('NSFW content', style: TextStyle(color: AppTheme.danger)),
             ],
           ),
           content: const Text(
             'This game contains adult content. Do you wish to proceed?',
-            style: TextStyle(color: Colors.white),
           ),
           actions: [
             TextButton(
-              onPressed: () {
-                context.pop(); // Pop dialog
-              },
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text(
-                'I Consent',
-                style: TextStyle(color: Colors.red),
+                'I consent',
+                style: TextStyle(color: AppTheme.danger),
               ),
             ),
             FilledButton(
-              onPressed: () {
-                context.pop(); // Pop dialog
-                context.pop(); // Pop screen
-              },
               style: FilledButton.styleFrom(
                 backgroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
+                foregroundColor: Colors.black,
               ),
-              child: const Text(
-                'Exit',
-                style: TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                if (context.canPop()) context.pop();
+              },
+              child: const Text('Exit'),
             ),
           ],
         ),
@@ -199,876 +159,860 @@ class _GameDetailsScreenState extends State<GameDetailsScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const GameDetailsSkeleton();
-    }
-
-    if (_game == null) {
-      return Scaffold(
-        appBar: AppBar(leading: const BackButton()),
-        body: const Center(
-          child: Text('Game not found', style: TextStyle(color: Colors.white)),
+  /// Shows a modal spinner while [work] runs.
+  Future<T> _withProgress<T>(String message, Future<T> Function() work) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+        canPop: false,
+        child: Center(
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(message),
+                ],
+              ),
+            ),
+          ),
         ),
+      ),
+    );
+    try {
+      return await work();
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  /// Turns a mirror entry into a list of downloadable file URLs, asks the user
+  /// which ones to download, then queues them.
+  Future<void> _onMirrorTap(String name, String value) async {
+    if (value.isEmpty) return;
+
+    List<String> files;
+    final isDirectHost =
+        value.contains('fuckingfast.co') || value.contains('datanodes.to');
+    if (value.contains('\n')) {
+      files = value
+          .split('\n')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    } else if (isDirectHost) {
+      files = [value.trim()];
+    } else if (name.contains('FuckingFast') || name.contains('DataNodes')) {
+      // Link collection on a paste site.
+      files = await _withProgress(
+        'Fetching file list…',
+        () => ScraperService().getPastebinLinks(value),
+      );
+    } else {
+      files = await _withProgress(
+        'Fetching file list…',
+        () => ScraperService().getMirrorFileList(value),
       );
     }
 
-    final images = _game!.screenshots.isNotEmpty
-        ? _game!.screenshots
-        : [_game!.coverUrl];
+    if (!mounted) return;
+    if (files.isEmpty) {
+      _snack('No downloadable files found — opening in browser');
+      _launch(value);
+      return;
+    }
 
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: AppTheme.backgroundDark.withOpacity(0.8),
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_new,
-            color: Colors.white,
-            size: 20,
-          ),
-          onPressed: () => context.pop(),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(
-              _isFavorite ? Icons.bookmark : Icons.bookmark_border,
-              color: _isFavorite ? AppTheme.primaryGreen : Colors.white,
-            ),
-            onPressed: _toggleFavorite,
-          ),
-          IconButton(
-            icon: const Icon(Icons.share, color: Colors.white),
-            onPressed: () {},
-          ),
-        ],
-        flexibleSpace: Container(
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: Colors.white.withOpacity(0.1)),
-            ),
-          ),
-          child: ClipRect(child: Container(color: Colors.transparent)),
-        ),
+    final existing = ref.read(downloadSessionProvider(_game!.title));
+    final selected = files.length == 1
+        ? files
+        : await context.push<List<String>>(
+            '/select-files',
+            extra: {
+              'game': _game,
+              'fileUrls': files,
+              if (existing != null) ...{
+                'initialSelection': existing.selectedUrls,
+                'completedFiles': existing.completedUrls,
+              },
+            },
+          );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    await _queue(selected, files);
+  }
+
+  Future<void> _queue(List<String> urls, List<String> allUrls) async {
+    final service = DownloadService();
+    if (service.needsDownloadDirectory) {
+      final picked = await service.setDownloadDirectory();
+      if (!picked) {
+        _snack('Download cancelled: no folder selected');
+        return;
+      }
+    }
+    if (!await service.requestStoragePermission()) {
+      _snack('Storage permission is required to save downloads');
+      return;
+    }
+
+    final game = _game!;
+    final result = await service.queueGame(
+      gameTitle: game.title,
+      coverUrl: game.coverUrl,
+      gameUrl: game.url,
+      urls: urls,
+      allUrls: allUrls,
+      totalGameSize: game.repackSize ?? game.size,
+    );
+    if (!mounted) return;
+    _snack(
+      result == QueueResult.merged
+          ? 'Added files to the existing download'
+          : 'Download started (${urls.length} files)',
+      action: SnackBarAction(
+        label: 'VIEW',
+        onPressed: () => openDownloadDetails(context, game.title),
       ),
-      body: SingleChildScrollView(
-        // ...
-        child: Padding(
-          padding: EdgeInsets.only(
-            top: MediaQuery.of(context).padding.top + 60,
-            bottom: 24,
-          ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) return const GameDetailsSkeleton();
+
+    final game = _game;
+    if (game == null) {
+      return Scaffold(
+        appBar: AppBar(leading: const BackButton()),
+        body: Center(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Title Section
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _game!.title,
-                      style: const TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        height: 1.1,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _game!.uploadDate ?? 'Unknown Date',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
-
+              const Icon(LucideIcons.wifiOff, size: 44, color: Colors.white12),
+              const SizedBox(height: 12),
+              const Text('Could not load this game'),
               const SizedBox(height: 16),
-
-              // Carousel
-              Stack(
-                alignment: Alignment.bottomCenter,
-                children: [
-                  CarouselSlider(
-                    options: CarouselOptions(
-                      autoPlay: _isAutoPlay,
-                      autoPlayInterval: const Duration(seconds: 4),
-                      aspectRatio: 16 / 9,
-                      viewportFraction: 0.9,
-                      enableInfiniteScroll: true,
-                      enlargeCenterPage: true,
-                      onPageChanged: (index, reason) {
-                        setState(() {
-                          _currentCarouselIndex = index;
-                        });
-                        if (reason == CarouselPageChangedReason.manual) {
-                          setState(() {
-                            _isAutoPlay = false;
-                          });
-                          _autoPlayTimer?.cancel();
-                          _autoPlayTimer = Timer(
-                            const Duration(seconds: 7),
-                            () {
-                              if (mounted) {
-                                setState(() {
-                                  _isAutoPlay = true;
-                                });
-                              }
-                            },
-                          );
-                        }
-                      },
-                    ),
-                    items: images.map((imageUrl) {
-                      return Builder(
-                        builder: (BuildContext context) {
-                          return Container(
-                            width: MediaQuery.of(context).size.width,
-                            margin: const EdgeInsets.symmetric(horizontal: 5.0),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.white10),
-                              image: DecorationImage(
-                                image: CachedNetworkImageProvider(imageUrl),
-                                fit: BoxFit.cover,
-                              ),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Colors.black45,
-                                  blurRadius: 10,
-                                  offset: Offset(0, 5),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      );
-                    }).toList(),
-                  ),
-                  if (images.length > 1)
-                    Positioned(
-                      bottom: 10,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(images.length, (index) {
-                          return Container(
-                            width: _currentCarouselIndex == index ? 20.0 : 6.0,
-                            height: 6.0,
-                            margin: const EdgeInsets.symmetric(horizontal: 4.0),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(3),
-                              color: _currentCarouselIndex == index
-                                  ? AppTheme.primaryGreen
-                                  : Colors.white.withOpacity(0.3),
-                            ),
-                          );
-                        }),
-                      ),
-                    ),
-                ],
-              ),
-
-              const SizedBox(height: 24),
-
-              // Info Grid
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Cover Art
-                    Container(
-                      width: 100,
-                      height: 150,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.white10),
-                        image: DecorationImage(
-                          image: CachedNetworkImageProvider(_game!.coverUrl),
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    // Details
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 4,
-                            children: [
-                              if (_game!.genre != null)
-                                ..._game!.genre!
-                                    .split(',')
-                                    .map((g) => _buildTag(g.trim())),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          if (_game!.companies != null)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 8.0),
-                              child: _buildDetailRow(
-                                'Company',
-                                _game!.companies!,
-                                valueColor: Colors.white70,
-                                maxLines: 2,
-                              ),
-                            ),
-                          if (_game!.languages != null)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 8.0),
-                              child: _buildDetailRow(
-                                'Language',
-                                _game!.languages!,
-                                valueColor: Colors.white70,
-                                maxLines: 3,
-                              ),
-                            ),
-                          _buildDetailRow(
-                            'Original Size',
-                            _game!.originalSize ?? 'Unknown',
-                            valueColor: Colors.white,
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const SizedBox(
-                                width: 70,
-                                child: Text(
-                                  'REPACK\nSIZE',
-                                  style: TextStyle(
-                                    color: AppTheme.primaryGreen,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  _game!.repackSize ?? _game!.size,
-                                  style: const TextStyle(
-                                    color: AppTheme.primaryGreen,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Description Expandable
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  children: [
-                    InkWell(
-                      onTap: () {
-                        setState(() {
-                          _isDescriptionExpanded = !_isDescriptionExpanded;
-                        });
-                      },
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 12,
-                          horizontal: 16,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surfaceDark,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: _isDescriptionExpanded
-                                ? AppTheme.primaryGreen.withOpacity(0.3)
-                                : Colors.white10,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              _isDescriptionExpanded
-                                  ? 'Hide Description'
-                                  : 'Show Description',
-                              style: const TextStyle(
-                                color: AppTheme.primaryGreen,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Icon(
-                              _isDescriptionExpanded
-                                  ? Icons.expand_less
-                                  : Icons.expand_more,
-                              color: AppTheme.primaryGreen,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (_isDescriptionExpanded && _game!.description != null)
-                      Container(
-                        margin: const EdgeInsets.only(top: 8),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surfaceHighlight.withOpacity(0.5),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          _game!.description!,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                            height: 1.5,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Downloads Section
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.only(left: 12),
-                      decoration: const BoxDecoration(
-                        border: Border(
-                          left: BorderSide(
-                            color: AppTheme.primaryGreen,
-                            width: 4,
-                          ),
-                        ),
-                      ),
-                      child: const Row(
-                        children: [
-                          Text(
-                            'Download Options',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          SizedBox(width: 8),
-                          Icon(
-                            LucideIcons.download,
-                            color: AppTheme.primaryGreen,
-                            size: 20,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    // Categorize mirrors
-                    Builder(
-                      builder: (context) {
-                        final directMirrors = Map.fromEntries(
-                          _game!.mirrors.entries.where(
-                            (e) =>
-                                !e.key.contains('1337x') &&
-                                !e.key.contains('RuTor') &&
-                                !e.key.contains('Tapochek'),
-                          ),
-                        );
-                        final torrentMirrors = Map.fromEntries(
-                          _game!.mirrors.entries.where(
-                            (e) =>
-                                e.key.contains('1337x') ||
-                                e.key.contains('RuTor') ||
-                                e.key.contains('Tapochek'),
-                          ),
-                        );
-
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // Mirrors (Direct Links)
-                            if (directMirrors.isNotEmpty) ...[
-                              const Text(
-                                'MIRRORS (DIRECT LINKS)',
-                                style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 1.0,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              ...directMirrors.entries.map((entry) {
-                                bool isPremium = entry.key.contains(
-                                  'FuckingFast',
-                                );
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 8.0),
-                                  child: DownloadOptionTile(
-                                    title: entry.key,
-                                    subtitle: isPremium
-                                        ? 'Ultra Fast Speed • Premium'
-                                        : 'Direct Link',
-                                    icon: isPremium
-                                        ? LucideIcons.zap
-                                        : LucideIcons.cloud,
-                                    isPremium: isPremium,
-                                    onTap: () async {
-                                      if (entry.value.isNotEmpty) {
-                                        // Show loading dialog
-                                        showDialog(
-                                          context: context,
-                                          barrierDismissible: false,
-                                          builder: (c) => const Center(
-                                            child: CircularProgressIndicator(
-                                              color: AppTheme.primaryGreen,
-                                            ),
-                                          ),
-                                        );
-
-                                        try {
-                                          // 0. FAST PATH: Check for multiple direct links (newline separated)
-                                          if (entry.value.contains('\n')) {
-                                            final urls = entry.value.split(
-                                              '\n',
-                                            );
-                                            Navigator.pop(
-                                              context,
-                                            ); // Close loading dialog
-
-                                            final selectedFiles = await context
-                                                .push<List<String>>(
-                                                  '/select-files',
-                                                  extra: {
-                                                    'game': _game,
-                                                    'fileUrls': urls,
-                                                  },
-                                                );
-
-                                            if (selectedFiles != null &&
-                                                selectedFiles.isNotEmpty) {
-                                              _processSelectedDownloads(
-                                                selectedFiles,
-                                                urls,
-                                              );
-                                            }
-                                            return;
-                                          }
-
-                                          // 1. Check for Indirect/Pastebin Links for Direct Hosts
-                                          if ((entry.key.contains(
-                                                    'FuckingFast',
-                                                  ) &&
-                                                  !entry.value.contains(
-                                                    'fuckingfast.co',
-                                                  )) ||
-                                              (entry.key.contains(
-                                                    'DataNodes',
-                                                  ) &&
-                                                  !entry.value.contains(
-                                                    'datanodes.to',
-                                                  ))) {
-                                            // Scrape the pastebin for the actual FF/DN links
-                                            final links = await ScraperService()
-                                                .getPastebinLinks(entry.value);
-
-                                            if (context.mounted) {
-                                              Navigator.pop(
-                                                context,
-                                              ); // Close loading dialog
-
-                                              if (links.isNotEmpty) {
-                                                // Navigate to Select Files with the scraped Intermediate Links
-                                                final selectedFiles =
-                                                    await context
-                                                        .push<List<String>>(
-                                                          '/select-files',
-                                                          extra: {
-                                                            'game': _game,
-                                                            'fileUrls': links,
-                                                          },
-                                                        );
-
-                                                if (selectedFiles != null &&
-                                                    selectedFiles.isNotEmpty) {
-                                                  // User selected files and clicked "Save Selection" (we'll treat as Download)
-                                                  // Now we need to process these downloads
-                                                  _processSelectedDownloads(
-                                                    selectedFiles,
-                                                    links,
-                                                  );
-                                                }
-                                                return;
-                                              } else {
-                                                // Scrape failed or empty, fallback to browser
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  const SnackBar(
-                                                    content: Text(
-                                                      'Could not parse link collection, opening in browser...',
-                                                    ),
-                                                  ),
-                                                );
-                                                _launchUrl(entry.value);
-                                                return;
-                                              }
-                                            }
-                                          }
-
-                                          // 1. Try Direct Download Extraction (FuckingFast, DataNodes)
-                                          if (entry.value.contains(
-                                                'fuckingfast.co',
-                                              ) ||
-                                              entry.value.contains(
-                                                'datanodes.to',
-                                              )) {
-                                            final directLink =
-                                                await ScraperService()
-                                                    .getDirectDownloadLink(
-                                                      entry.value,
-                                                    );
-
-                                            if (context.mounted) {
-                                              if (directLink != null) {
-                                                Navigator.pop(
-                                                  context,
-                                                ); // Close loading
-                                                _launchUrl(directLink);
-                                                return; // Done
-                                              } else {
-                                                // If extraction failed, open original link directly
-                                                // Do NOT fall through to getMirrorFileList as these are not file lists
-                                                if (Navigator.canPop(context)) {
-                                                  Navigator.pop(context);
-                                                }
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  const SnackBar(
-                                                    content: Text(
-                                                      'Could not extract direct link, opening in browser...',
-                                                    ),
-                                                  ),
-                                                );
-                                                _launchUrl(entry.value);
-                                                return;
-                                              }
-                                            }
-                                          }
-
-                                          // 2. Try Scraper for File Lists (MultiUp, etc.)
-                                          final files = await ScraperService()
-                                              .getMirrorFileList(entry.value);
-
-                                          if (context.mounted) {
-                                            if (Navigator.canPop(context)) {
-                                              Navigator.pop(
-                                                context,
-                                              ); // Close loading
-                                            }
-
-                                            if (files.isNotEmpty) {
-                                              final selectedFiles =
-                                                  await context
-                                                      .push<List<String>>(
-                                                        '/select-files',
-                                                        extra: {
-                                                          'game': _game,
-                                                          'fileUrls': files,
-                                                        },
-                                                      );
-
-                                              if (selectedFiles != null &&
-                                                  selectedFiles.isNotEmpty) {
-                                                _processSelectedDownloads(
-                                                  selectedFiles,
-                                                  files,
-                                                );
-                                              }
-                                            } else {
-                                              // If scraped list is empty, open original link
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                const SnackBar(
-                                                  content: Text(
-                                                    'Opening link directly...',
-                                                  ),
-                                                ),
-                                              );
-                                              _launchUrl(entry.value);
-                                            }
-                                          }
-                                        } catch (e) {
-                                          if (context.mounted) {
-                                            if (Navigator.canPop(context)) {
-                                              Navigator.pop(
-                                                context,
-                                              ); // Close loading
-                                            }
-                                            ScaffoldMessenger.of(
-                                              context,
-                                            ).showSnackBar(
-                                              SnackBar(
-                                                content: Text('Error: $e'),
-                                              ),
-                                            );
-                                          }
-                                        }
-                                      }
-                                    },
-                                  ),
-                                );
-                              }),
-                              const SizedBox(height: 24),
-                            ],
-
-                            // Mirrors (Torrent)
-                            if (_game!.magnetLink != null ||
-                                _game!.torrentUrl != null ||
-                                torrentMirrors.isNotEmpty) ...[
-                              const Text(
-                                'MIRRORS (TORRENT)',
-                                style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 1.0,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              if (_game!.magnetLink != null)
-                                DownloadOptionTile(
-                                  title: 'Magnet Link',
-                                  subtitle: 'Recommended',
-                                  icon: LucideIcons.link,
-                                  isRecommended: true,
-                                  trailerIcon: LucideIcons.externalLink,
-                                  onTap: () {
-                                    if (_game!.magnetLink != null) {
-                                      _copyMagnet(_game!.magnetLink!);
-                                    }
-                                  },
-                                ),
-                              const SizedBox(height: 8),
-                              if (_game!.torrentUrl != null)
-                                DownloadOptionTile(
-                                  title: '.torrent File',
-                                  subtitle: 'Direct Download',
-                                  icon: LucideIcons.file,
-                                  trailerIcon: LucideIcons.download,
-                                  onTap: () {
-                                    if (_game!.torrentUrl != null) {
-                                      _downloadTorrent(_game!.torrentUrl!);
-                                    }
-                                  },
-                                ),
-                              // Add Torrent Sites (1337x, RuTor) here
-                              ...torrentMirrors.entries.map((entry) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: DownloadOptionTile(
-                                    title: entry.key,
-                                    subtitle: 'Torrent Tracker',
-                                    icon: LucideIcons
-                                        .globe, // Distinct icon for web links
-                                    trailerIcon: LucideIcons.externalLink,
-                                    onTap: () {
-                                      if (entry.value.isNotEmpty) {
-                                        _launchUrl(entry.value);
-                                      }
-                                    },
-                                  ),
-                                );
-                              }),
-                            ],
-                          ],
-                        );
-                      },
-                    ),
-                  ],
-                ),
+              FilledButton.icon(
+                onPressed: _load,
+                icon: const Icon(LucideIcons.refreshCw, size: 18),
+                label: const Text('Retry'),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
+      );
+    }
 
-  Widget _buildTag(String label) {
-    print('Checking tag: $label');
-    bool isAdult = label.toLowerCase() == 'adult';
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: isAdult
-            ? Colors.red.withOpacity(0.1)
-            : AppTheme.primaryGreen.withOpacity(0.1),
-        border: Border.all(
-          color: isAdult
-              ? Colors.red.withOpacity(0.3)
-              : AppTheme.primaryGreen.withOpacity(0.3),
-        ),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: isAdult ? Colors.red : AppTheme.primaryGreen,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
-  }
+    final session = ref.watch(downloadSessionProvider(game.title));
+    final wide = context.isWide;
 
-  Widget _buildDetailRow(
-    String label,
-    String value, {
-    Color valueColor = Colors.white,
-    int? maxLines = 1,
-  }) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 70,
-          child: Text(
-            label.toUpperCase(),
-            style: const TextStyle(
-              color: Colors.grey,
-              fontSize: 10,
-              fontWeight: FontWeight.w500,
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Back',
+          icon: const Icon(LucideIcons.arrowLeft),
+          onPressed: () => context.canPop() ? context.pop() : context.go('/'),
+        ),
+        title: wide
+            ? null
+            : Text(
+                game.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 16),
+              ),
+        actions: [
+          IconButton(
+            tooltip: _isFavorite ? 'Remove from Library' : 'Save to Library',
+            icon: Icon(
+              _isFavorite ? Icons.bookmark : Icons.bookmark_border,
+              color: _isFavorite ? AppTheme.primaryGreen : null,
             ),
+            onPressed: _toggleFavorite,
+          ),
+          IconButton(
+            tooltip: 'Copy page link',
+            icon: const Icon(LucideIcons.link),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: game.url));
+              _snack('Link copied');
+            },
+          ),
+          IconButton(
+            tooltip: 'Open in browser',
+            icon: const Icon(LucideIcons.externalLink),
+            onPressed: () => _launch(game.url),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: Scrollbar(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            context.pagePadding,
+            8,
+            context.pagePadding,
+            40,
+          ),
+          child: ContentConstraint(
+            maxWidth: 1400,
+            child: wide
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: context.windowSize == WindowSize.large
+                            ? 380
+                            : 330,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            AspectRatio(aspectRatio: 0.72, child: _cover(game)),
+                            const SizedBox(height: 20),
+                            _downloadSection(game, session),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 32),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _title(game),
+                            const SizedBox(height: 16),
+                            _infoTable(game),
+                            const SizedBox(height: 24),
+                            _Screenshots(images: _images(game)),
+                            const SizedBox(height: 24),
+                            _description(game),
+                          ],
+                        ),
+                      ),
+                    ],
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _title(game),
+                      const SizedBox(height: 16),
+                      _Screenshots(images: _images(game)),
+                      const SizedBox(height: 20),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: 104,
+                            height: 150,
+                            child: _cover(game),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(child: _infoTable(game)),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      _description(game),
+                      const SizedBox(height: 24),
+                      _downloadSection(game, session),
+                    ],
+                  ),
           ),
         ),
-        Expanded(
-          child: Text(
-            value,
-            style: TextStyle(
-              color: valueColor,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
+      ),
+    );
+  }
+
+  List<String> _images(Game g) => g.screenshots.isNotEmpty
+      ? g.screenshots
+      : [if (g.coverUrl.isNotEmpty) g.coverUrl];
+
+  Widget _cover(Game game) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: game.coverUrl.isEmpty
+          ? Container(color: AppTheme.surfaceHighlight)
+          : CachedNetworkImage(
+              imageUrl: game.coverUrl,
+              fit: BoxFit.cover,
+              errorWidget: (_, _, _) =>
+                  Container(color: AppTheme.surfaceHighlight),
             ),
-            maxLines: maxLines,
-            overflow: maxLines == 1 ? TextOverflow.ellipsis : null,
+    );
+  }
+
+  Widget _title(Game game) {
+    final tags = (game.genre ?? '')
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SelectableText(
+          game.title,
+          style: TextStyle(
+            fontSize: context.isWide ? 32 : 24,
+            fontWeight: FontWeight.bold,
+            height: 1.15,
+          ),
+        ),
+        if (game.uploadDate != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            game.uploadDate!,
+            style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
+          ),
+        ],
+        if (tags.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [for (final t in tags) _Tag(t)],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _infoTable(Game game) {
+    Widget row(String label, String? value, {Color? color, int lines = 2}) {
+      if (value == null || value.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 110,
+              child: Text(
+                label.toUpperCase(),
+                style: TextStyle(
+                  color: color ?? AppTheme.textMuted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                value,
+                maxLines: lines,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: color ?? Colors.white70,
+                  fontSize: 13,
+                  fontWeight: color != null ? FontWeight.bold : FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        row(
+          'Repack size',
+          game.repackSize ?? game.size,
+          color: AppTheme.primaryGreen,
+        ),
+        row('Original size', game.originalSize),
+        row('Company', game.companies),
+        row('Languages', game.languages, lines: 3),
+      ],
+    );
+  }
+
+  Widget _description(Game game) {
+    final text = game.description;
+    if (text == null || text.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'About',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: () =>
+                  setState(() => _descriptionExpanded = !_descriptionExpanded),
+              icon: Icon(
+                _descriptionExpanded
+                    ? LucideIcons.chevronUp
+                    : LucideIcons.chevronDown,
+                size: 16,
+              ),
+              label: Text(_descriptionExpanded ? 'Show less' : 'Show more'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 200),
+          alignment: Alignment.topCenter,
+          child: SelectableText(
+            text,
+            maxLines: _descriptionExpanded ? null : 5,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+              height: 1.55,
+            ),
           ),
         ),
       ],
     );
   }
 
-  Future<void> _processSelectedDownloads(
-    List<String> urls,
-    List<String> allUrls,
-  ) async {
-    if (urls.isEmpty) return;
+  Widget _downloadSection(Game game, DownloadSession? session) {
+    final direct = Map.fromEntries(
+      game.mirrors.entries.where((e) => !_isTorrentSite(e.key)),
+    );
+    final torrentSites = Map.fromEntries(
+      game.mirrors.entries.where((e) => _isTorrentSite(e.key)),
+    );
+    final hasTorrent =
+        game.magnetLink != null ||
+        game.torrentUrl != null ||
+        torrentSites.isNotEmpty;
 
-    // Ensure download directory is set
-    final downloadService = DownloadService();
-    await downloadService.initialize();
-
-    // Check if directory is invalid or not set
-    final currentDir = await downloadService.downloadDirectory;
-    if (currentDir == null) {
-      if (mounted) {
-        bool set = await downloadService.setDownloadDirectory();
-        if (!set && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Download cancelled: No directory selected'),
-            ),
-          );
-          return;
-        }
-      }
-    }
-
-    // Show loading dialog for resolution
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(
-        child: Card(
-          color: AppTheme.surfaceDark,
-          child: Padding(
-            padding: EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(color: AppTheme.primaryGreen),
-                SizedBox(height: 16),
-                Text(
-                  'Queuing downloads...',
-                  style: TextStyle(color: Colors.white),
-                ),
-              ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.only(left: 12),
+          decoration: const BoxDecoration(
+            border: Border(
+              left: BorderSide(color: AppTheme.primaryGreen, width: 4),
             ),
           ),
+          child: const Text(
+            'Download',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (session != null) ...[
+          _ActiveDownloadCard(session: session),
+          const SizedBox(height: 16),
+        ],
+        if (direct.isNotEmpty) ...[
+          const _Label('DIRECT DOWNLOAD (IN-APP)'),
+          for (final e in direct.entries)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: DownloadOptionTile(
+                title: e.key,
+                subtitle: _mirrorSubtitle(e.key, e.value),
+                icon: e.key.contains('FuckingFast')
+                    ? LucideIcons.zap
+                    : LucideIcons.cloud,
+                isPremium: e.key.contains('FuckingFast'),
+                trailerIcon: LucideIcons.download,
+                onTap: () => _onMirrorTap(e.key, e.value),
+              ),
+            ),
+          const SizedBox(height: 16),
+        ],
+        if (hasTorrent) ...[
+          const _Label('TORRENT'),
+          if (game.magnetLink != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: DownloadOptionTile(
+                title: 'Magnet link',
+                subtitle: 'Open in your torrent client',
+                icon: LucideIcons.magnet,
+                isRecommended: true,
+                trailerIcon: LucideIcons.externalLink,
+                onTap: () async {
+                  final ok = await launchUrl(Uri.parse(game.magnetLink!));
+                  if (!ok) _copyMagnet(game.magnetLink!);
+                },
+              ),
+            ),
+          if (game.magnetLink != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => _copyMagnet(game.magnetLink!),
+                icon: const Icon(LucideIcons.copy, size: 14),
+                label: const Text('Copy magnet'),
+              ),
+            ),
+          if (game.torrentUrl != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: DownloadOptionTile(
+                title: '.torrent file',
+                subtitle: 'Download via browser',
+                icon: LucideIcons.fileDown,
+                trailerIcon: LucideIcons.externalLink,
+                onTap: () => _launch(game.torrentUrl!),
+              ),
+            ),
+          for (final e in torrentSites.entries)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: DownloadOptionTile(
+                title: e.key,
+                subtitle: 'Torrent tracker page',
+                icon: LucideIcons.globe,
+                trailerIcon: LucideIcons.externalLink,
+                onTap: () => _launch(e.value),
+              ),
+            ),
+        ],
+        if (direct.isEmpty && !hasTorrent)
+          const Text(
+            'No download links were found on this page.',
+            style: TextStyle(color: AppTheme.textMuted),
+          ),
+      ],
+    );
+  }
+
+  static bool _isTorrentSite(String name) =>
+      name.contains('1337x') ||
+      name.contains('RuTor') ||
+      name.contains('Tapochek');
+
+  static String _mirrorSubtitle(String name, String value) {
+    final count = value.contains('\n') ? value.split('\n').length : null;
+    final speed = name.contains('FuckingFast') ? 'Fastest' : 'Direct link';
+    return count != null ? '$speed • $count files' : speed;
+  }
+}
+
+class _Label extends StatelessWidget {
+  final String text;
+  const _Label(this.text);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: AppTheme.textMuted,
+        fontSize: 10,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 1.0,
+      ),
+    ),
+  );
+}
+
+class _Tag extends StatelessWidget {
+  final String label;
+  const _Tag(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    final adult = label.toLowerCase() == 'adult';
+    final color = adult ? AppTheme.danger : AppTheme.primaryGreen;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
         ),
       ),
     );
+  }
+}
 
-    try {
-      if (urls.isNotEmpty) {
-        // Queue the entire game session
-        await downloadService.queueGame(
-          gameTitle: _game?.title ?? "Unknown",
-          coverUrl: _game?.coverUrl ?? "",
-          urls: urls,
-          totalGameSize: _game?.size ?? "TBD",
-          allUrls: allUrls,
-        );
+/// Shown on the game page when this game is already in the download list.
+class _ActiveDownloadCard extends StatelessWidget {
+  final DownloadSession session;
+  const _ActiveDownloadCard({required this.session});
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Downloads queued successfully!')),
-          );
-          Navigator.pop(context); // Close dialog
-        }
-      } else {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('No files selected')));
-      }
-    } catch (e) {
-      if (e.toString().contains('Storage permission denied')) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Please grant Storage Permissions to download files.',
-              ),
-              backgroundColor: Colors.red,
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                StatusChip(status: s.status),
+                const Spacer(),
+                Text(
+                  s.status == SessionStatus.downloading
+                      ? formatSpeed(s.networkSpeed)
+                      : '${(s.overallProgress * 100).toStringAsFixed(0)}%',
+                  style: const TextStyle(
+                    color: AppTheme.primaryGreen,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
             ),
-          );
-        }
-      } else {
-        print('Error queuing game: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
-        }
-      }
-    }
+            const SizedBox(height: 10),
+            GreenProgressBar(value: s.overallProgress),
+            const SizedBox(height: 6),
+            Text(
+              sessionProgressLabel(s),
+              style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (!s.isCompleted) PauseResumeButton(session: s),
+                OutlinedButton.icon(
+                  onPressed: () => openDownloadDetails(context, s.gameTitle),
+                  icon: const Icon(LucideIcons.listChecks, size: 18),
+                  label: const Text('Details'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Screenshots extends StatefulWidget {
+  final List<String> images;
+  const _Screenshots({required this.images});
+
+  @override
+  State<_Screenshots> createState() => _ScreenshotsState();
+}
+
+class _ScreenshotsState extends State<_Screenshots> {
+  final _controller = CarouselSliderController();
+  int _index = 0;
+
+  void _openViewer(int initial) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (dialogContext) =>
+          _ImageViewer(images: widget.images, initialIndex: initial),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final images = widget.images;
+    if (images.isEmpty) return const SizedBox.shrink();
+    final wide = context.isWide;
+
+    return Column(
+      children: [
+        Stack(
+          alignment: Alignment.center,
+          children: [
+            CarouselSlider(
+              carouselController: _controller,
+              options: CarouselOptions(
+                autoPlay: images.length > 1,
+                autoPlayInterval: const Duration(seconds: 5),
+                pauseAutoPlayOnTouch: true,
+                aspectRatio: 16 / 9,
+                viewportFraction: wide ? 1.0 : 0.92,
+                enlargeCenterPage: !wide,
+                enableInfiniteScroll: images.length > 1,
+                onPageChanged: (i, _) => setState(() => _index = i),
+              ),
+              items: [
+                for (var i = 0; i < images.length; i++)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.zoomIn,
+                    child: GestureDetector(
+                      onTap: () => _openViewer(i),
+                      child: Container(
+                        margin: EdgeInsets.symmetric(horizontal: wide ? 0 : 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppTheme.border),
+                          image: DecorationImage(
+                            image: CachedNetworkImageProvider(images[i]),
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            if (wide && images.length > 1) ...[
+              Positioned(
+                left: 8,
+                child: _ArrowButton(
+                  icon: LucideIcons.chevronLeft,
+                  onTap: _controller.previousPage,
+                ),
+              ),
+              Positioned(
+                right: 8,
+                child: _ArrowButton(
+                  icon: LucideIcons.chevronRight,
+                  onTap: _controller.nextPage,
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (images.length > 1) ...[
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (var i = 0; i < images.length; i++)
+                GestureDetector(
+                  onTap: () => _controller.animateToPage(i),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: _index == i ? 20 : 6,
+                    height: 6,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(3),
+                      color: _index == i
+                          ? AppTheme.primaryGreen
+                          : Colors.white.withValues(alpha: 0.25),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ArrowButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _ArrowButton({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black54,
+      shape: const CircleBorder(),
+      child: IconButton(
+        icon: Icon(icon, color: Colors.white),
+        onPressed: onTap,
+      ),
+    );
+  }
+}
+
+/// Full-screen screenshot viewer with zoom and keyboard navigation.
+class _ImageViewer extends StatefulWidget {
+  final List<String> images;
+  final int initialIndex;
+  const _ImageViewer({required this.images, required this.initialIndex});
+
+  @override
+  State<_ImageViewer> createState() => _ImageViewerState();
+}
+
+class _ImageViewerState extends State<_ImageViewer> {
+  late final PageController _page = PageController(
+    initialPage: widget.initialIndex,
+  );
+
+  @override
+  void dispose() {
+    _page.dispose();
+    super.dispose();
+  }
+
+  void _go(int delta) => _page.animateToPage(
+    ((_page.page?.round() ?? 0) + delta).clamp(0, widget.images.length - 1),
+    duration: const Duration(milliseconds: 250),
+    curve: Curves.easeOut,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _go(-1),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _go(1),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: _page,
+              itemCount: widget.images.length,
+              itemBuilder: (_, i) => InteractiveViewer(
+                maxScale: 4,
+                child: Center(
+                  child: CachedNetworkImage(imageUrl: widget.images[i]),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 16,
+              right: 16,
+              child: _ArrowButton(
+                icon: LucideIcons.x,
+                onTap: () => Navigator.pop(context),
+              ),
+            ),
+            if (widget.images.length > 1) ...[
+              Positioned(
+                left: 16,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: _ArrowButton(
+                    icon: LucideIcons.chevronLeft,
+                    onTap: () => _go(-1),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 16,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: _ArrowButton(
+                    icon: LucideIcons.chevronRight,
+                    onTap: () => _go(1),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }

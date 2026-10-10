@@ -1,16 +1,24 @@
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
+import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
+import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 import 'package:fitgirl_mobile_flutter/models/file_item.dart';
 import 'package:fitgirl_mobile_flutter/models/game.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+/// Lets the user choose which repack files to download.
+///
+/// When [initialSelection] is given the screen is in "manage" mode for an
+/// existing download: completed files are locked and the result is applied
+/// to the running download.
 class SelectFilesScreen extends StatefulWidget {
   final Game game;
   final List<String> fileUrls;
-  final List<String>? initialSelection; // For existing sessions
-  final List<String>? completedFiles; // Locked/Done files
+  final List<String>? initialSelection;
+  final List<String>? completedFiles;
 
   const SelectFilesScreen({
     super.key,
@@ -24,574 +32,484 @@ class SelectFilesScreen extends StatefulWidget {
   State<SelectFilesScreen> createState() => _SelectFilesScreenState();
 }
 
-class _SelectFilesScreenState extends State<SelectFilesScreen> {
-  List<FileItem> _updatedFiles = [];
-  List<FileItem> _coreFiles = [];
-  List<FileItem> _languagePacks = [];
-  List<FileItem> _optionalFiles = [];
+class _Section {
+  final String title;
+  final IconData icon;
+  final String emptyText;
+  final List<FileItem> files = [];
+  _Section(this.title, this.icon, this.emptyText);
+}
 
-  bool _showAllCore = false;
+class _SelectFilesScreenState extends State<SelectFilesScreen> {
+  late final _Section _updates = _Section('Updates', LucideIcons.refreshCw, '');
+  late final _Section _core = _Section('Core files', LucideIcons.package, '');
+  late final _Section _languages = _Section(
+    'Language packs',
+    LucideIcons.languages,
+    'No language packs for this repack',
+  );
+  late final _Section _optional = _Section(
+    'Optional bonus',
+    LucideIcons.plusCircle,
+    'No optional files for this repack',
+  );
+  List<_Section> get _sections => [_updates, _core, _languages, _optional];
+  Iterable<FileItem> get _allFiles => _sections.expand((s) => s.files);
+
+  late final Set<String> _completed = widget.completedFiles?.toSet() ?? {};
+  bool get _manageMode => widget.initialSelection != null;
+  String _query = '';
+  late int _bytesPerFile;
+
+  static final _updateRegex = RegExp(
+    r'(update|patch|fix)',
+    caseSensitive: false,
+  );
+  static final _langRegex = RegExp(
+    r'(selective|language|german|french|spanish|italian|russian|portuguese|'
+    r'brazilian|japanese|chinese|korean|polish|traditional|simplified|arab)',
+    caseSensitive: false,
+  );
 
   @override
   void initState() {
     super.initState();
     _parseFiles();
+    // "Repack Size: from 25 GB" is the size of the mandatory files, so it
+    // gives a per-part estimate. FitGirl parts are mostly equal in size.
+    final repack = parseSizeToBytes(widget.game.repackSize ?? widget.game.size);
+    final mandatory = _core.files.length + _updates.files.length;
+    _bytesPerFile = repack > 0 && mandatory > 0
+        ? repack ~/ mandatory
+        : 500 * 1024 * 1024;
   }
 
   void _parseFiles() {
-    int idCounter = 0;
-
-    // Regex for Updated Packs
-    final updatedRegex = RegExp(r'(update|patch|fix)', caseSensitive: false);
-    final langRegex = RegExp(
-      r'(selective|language|german|french|spanish|italian|russian|portuguese|brazilian|japanese|chinese|korean|polish|traditional|simplified|arab)',
-      caseSensitive: false,
-    );
-
-    // Prepare Sets for O(1) lookup
-    final Set<String> selectionSet = widget.initialSelection?.toSet() ?? {};
-    final Set<String> completedSet = widget.completedFiles?.toSet() ?? {};
-    final bool hasPreSelection = widget.initialSelection != null;
-
-    for (var url in widget.fileUrls) {
-      var name = Uri.decodeFull(url.split('/').last.split('#').last);
-      name = name.replaceAll('\n', '').trim();
-
+    final preselected = widget.initialSelection?.toSet();
+    var id = 0;
+    final seen = <String>{};
+    for (final raw in widget.fileUrls) {
+      final url = raw.trim();
+      if (url.isEmpty || !seen.add(url)) continue;
+      final name = fileNameFromUrl(url);
       if (name.isEmpty) continue;
+      final lower = name.toLowerCase();
 
-      final lowerName = name.toLowerCase();
+      final isUpdate =
+          _updateRegex.hasMatch(lower) && !lower.contains('setup-fitgirl');
+      final isLang = !isUpdate && _langRegex.hasMatch(lower);
+      final isOptional = !isUpdate && !isLang && lower.contains('optional');
+      final tag = isUpdate
+          ? 'UPDATE'
+          : isLang
+          ? 'LANG'
+          : isOptional
+          ? 'OPT'
+          : 'REQ';
 
-      bool isUpdated =
-          updatedRegex.hasMatch(lowerName) &&
-          !lowerName.contains('setup-fitgirl');
-
-      bool isLanguage = langRegex.hasMatch(lowerName);
-      bool isOptional = lowerName.contains('optional');
-
-      String? tag;
-      if (isUpdated) {
-        tag = 'UPDATE';
-      } else if (isLanguage) {
-        tag = 'LANG';
-      } else if (isOptional) {
-        tag = 'OPT';
-      } else {
-        tag = 'REQ'; // Core
-      }
-
-      // Selection Logic
-      bool isSelected = false;
-      bool isRequired = false; // "Visual" required
-
-      if (completedSet.contains(url)) {
-        isSelected = true;
-        isRequired = true; // Lock it effectively
-      } else if (hasPreSelection) {
-        isSelected = selectionSet.contains(url);
-      } else {
-        // Default Logic for new games
-        isSelected = (tag == 'REQ' || tag == 'UPDATE');
-      }
+      final done = _completed.contains(url);
+      final selected =
+          done ||
+          (preselected != null
+              ? preselected.contains(url)
+              : (tag == 'REQ' || tag == 'UPDATE'));
 
       final item = FileItem(
-        id: '${++idCounter}',
+        id: '${++id}',
         name: name,
-        size: '~500 MB',
-        required:
-            isRequired ||
-            (tag == 'REQ' && !hasPreSelection), // Only force Req if new game
-        selected: isSelected,
+        size: '',
+        required: done,
+        selected: selected,
         tag: tag,
         url: url,
       );
-
-      if (isUpdated) {
-        _updatedFiles.add(item);
-      } else if (isLanguage) {
-        _languagePacks.add(item);
-      } else if (isOptional) {
-        _optionalFiles.add(item);
-      } else {
-        _coreFiles.add(item);
-      }
+      (isUpdate
+              ? _updates
+              : isLang
+              ? _languages
+              : isOptional
+              ? _optional
+              : _core)
+          .files
+          .add(item);
     }
   }
 
-  // Approx size calculation: Count * 500MB
-  double get _totalSelectedSizeMB {
-    int count = 0;
-    for (var f in [
-      ..._updatedFiles,
-      ..._coreFiles,
-      ..._languagePacks,
-      ..._optionalFiles,
-    ]) {
-      if (f.selected) count++;
-    }
-    return count * 500.0;
-  }
+  int get _selectedCount => _allFiles.where((f) => f.selected).length;
 
-  String _formatSize(double mb) {
-    if (mb >= 1024) {
-      return '~${(mb / 1024).toStringAsFixed(1)} GB';
-    }
-    return '~${mb.toInt()} MB';
-  }
-
-  void _toggleFile(FileItem file) {
-    // Prevent unchecking completed files
-    if (widget.completedFiles != null &&
-        widget.completedFiles!.contains(file.url)) {
+  void _toggle(FileItem f) {
+    if (_completed.contains(f.url)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot deselect a completed file')),
+        const SnackBar(content: Text('Already downloaded — cannot deselect')),
       );
       return;
     }
+    setState(() => f.selected = !f.selected);
+  }
 
+  void _setAll(Iterable<FileItem> files, bool value) {
     setState(() {
-      file.selected = !file.selected;
+      for (final f in files) {
+        if (!_completed.contains(f.url)) f.selected = value;
+      }
     });
   }
 
-  void _toggleSection(List<FileItem> files, bool select) {
-    bool hasChanges = false;
-    for (var f in files) {
-      if (widget.completedFiles != null &&
-          widget.completedFiles!.contains(f.url)) {
-        continue; // Skip completed
+  void _resetDefaults() {
+    setState(() {
+      for (final f in _allFiles) {
+        f.selected =
+            _completed.contains(f.url) || f.tag == 'REQ' || f.tag == 'UPDATE';
       }
-      f.selected = select;
-      hasChanges = true;
-    }
-    if (hasChanges) setState(() {});
+    });
   }
 
-  void _resetSelection() {
-    if (widget.initialSelection != null) {
-      // Reset to INITIAL state
-      _parseFiles(); // Lazy reset?
-      // Better to re-run parse logic or just reload screen?
-      // Let's iterate and reset based on logic.
-      setState(() {
-        for (var f in [
-          ..._coreFiles,
-          ..._updatedFiles,
-          ..._languagePacks,
-          ..._optionalFiles,
-        ]) {
-          if (widget.completedFiles?.contains(f.url) ?? false) {
-            f.selected = true; // Keep completed
-            continue;
-          }
-          // If we are in "Manage Mode", reset might mean "Reset to stored state" OR "Reset to default defaults".
-          // Let's assume user wants to reset to "Defaults" (Core checked, others unchecked)
-          // BUT keep completed files checked.
-          final isUpdated = f.tag == 'UPDATE';
-          final isCore = f.tag == 'REQ';
-          f.selected = isCore || isUpdated;
-        }
-      });
-    } else {
-      setState(() {
-        for (var f in _coreFiles) f.selected = true;
-        for (var f in _updatedFiles) f.selected = true;
-        for (var f in _languagePacks) f.selected = false;
-        for (var f in _optionalFiles) f.selected = false;
-      });
+  void _confirm() {
+    final selected = _allFiles
+        .where((f) => f.selected && f.url != null)
+        .map((f) => f.url!)
+        .toList();
+    if (selected.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Select at least one file')));
+      return;
     }
+    // Keep the original part order.
+    final order = {
+      for (var i = 0; i < widget.fileUrls.length; i++)
+        widget.fileUrls[i].trim(): i,
+    };
+    selected.sort((a, b) => (order[a] ?? 0).compareTo(order[b] ?? 0));
+    context.pop(selected);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => context.pop(),
-        ),
-        title: const Text(
-          'Select Files',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        centerTitle: true,
-        actions: [
-          TextButton(
-            onPressed: _resetSelection,
-            child: const Text(
-              'Reset',
-              style: TextStyle(
-                color: AppTheme.primaryGreen,
-                fontWeight: FontWeight.bold,
-              ),
+    final query = _query.toLowerCase();
+    bool visible(FileItem f) =>
+        query.isEmpty || f.name.toLowerCase().contains(query);
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter, control: true):
+            _confirm,
+        const SingleActivator(LogicalKeyboardKey.escape): () => context.pop(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(
+            leading: IconButton(
+              tooltip: 'Back (Esc)',
+              icon: const Icon(LucideIcons.arrowLeft),
+              onPressed: () => context.pop(),
             ),
+            title: Text(
+              _manageMode ? 'Manage files' : 'Select files',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => _setAll(_allFiles, true),
+                child: const Text('All'),
+              ),
+              TextButton(
+                onPressed: _resetDefaults,
+                child: const Text('Defaults'),
+              ),
+              const SizedBox(width: 8),
+            ],
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildGameHeader(),
-          const Divider(height: 1, color: Colors.white12),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(16),
+          body: ContentConstraint(
+            maxWidth: 960,
+            child: Column(
               children: [
-                // Updated Packs Section
-                if (_updatedFiles.isNotEmpty) ...[
-                  _buildSectionHeader(
-                    'UPDATED PACKS',
-                    LucideIcons.refreshCw,
-                    _updatedFiles,
+                _buildGameHeader(),
+                Expanded(
+                  child: Scrollbar(
+                    child: ListView(
+                      padding: EdgeInsets.fromLTRB(
+                        context.pagePadding,
+                        8,
+                        context.pagePadding,
+                        24,
+                      ),
+                      children: [
+                        if (widget.fileUrls.length > 12)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: TextField(
+                              onChanged: (v) => setState(() => _query = v),
+                              decoration: const InputDecoration(
+                                hintText: 'Filter files by name',
+                                prefixIcon: Icon(LucideIcons.search, size: 18),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                        for (final section in _sections)
+                          if (section.files.isNotEmpty ||
+                              section.emptyText.isNotEmpty)
+                            _buildSection(
+                              section,
+                              section.files.where(visible).toList(),
+                            ),
+                      ],
+                    ),
                   ),
-                  ..._updatedFiles.map((f) => _buildFileTile(f)),
-                  const SizedBox(height: 24),
-                ],
-
-                // Core Files Section (Collapsible)
-                _buildCoreSection(),
-                const SizedBox(height: 24),
-
-                // Language Packs
-                _buildSectionHeader(
-                  'LANGUAGE PACKS',
-                  LucideIcons.languages,
-                  _languagePacks,
                 ),
-                if (_languagePacks.isEmpty)
-                  _buildEmptyStateCard('No language packs available')
-                else
-                  ..._languagePacks.map((f) => _buildFileTile(f)),
-                const SizedBox(height: 24),
-
-                // Optional Bonus
-                _buildSectionHeader(
-                  'OPTIONAL BONUS',
-                  LucideIcons.plusCircle,
-                  _optionalFiles,
-                ),
-                if (_optionalFiles.isEmpty)
-                  _buildEmptyStateCard('No optional bonus files available')
-                else
-                  ..._optionalFiles.map((f) => _buildFileTile(f)),
+                _buildBottomBar(),
               ],
             ),
           ),
-          _buildBottomBar(),
-        ],
+        ),
       ),
     );
   }
 
   Widget _buildGameHeader() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      color: Colors.black,
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        context.pagePadding,
+        8,
+        context.pagePadding,
+        8,
+      ),
       child: Row(
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: CachedNetworkImage(
-              imageUrl: widget.game.coverUrl,
-              width: 50,
-              height: 50,
-              fit: BoxFit.cover,
-            ),
+          CoverImage(
+            url: widget.game.coverUrl,
+            width: 48,
+            height: 64,
+            radius: 6,
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   widget.game.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Colors.white,
                     fontWeight: FontWeight.bold,
                     fontSize: 16,
                   ),
                 ),
+                const SizedBox(height: 4),
                 Text(
-                  '${widget.game.version ?? "v1.0"} • ${widget.game.genre ?? "Action"}',
-                  style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                  '${widget.fileUrls.length} files available'
+                  '${_completed.isNotEmpty ? ' · ${_completed.length} downloaded' : ''}',
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
               ],
             ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                'APPROX SIZE',
-                style: TextStyle(
-                  color: Colors.grey[500],
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                _formatSize(_totalSelectedSizeMB),
-                style: const TextStyle(
-                  color: AppTheme.primaryGreen,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _buildCoreSection() {
-    final showAll = _showAllCore || _coreFiles.length <= 10;
-    final displayFiles = showAll ? _coreFiles : _coreFiles.take(10).toList();
-
-    return Column(
-      children: [
-        _buildSectionHeader('CORE FILES', LucideIcons.lock, _coreFiles),
-        ...displayFiles.map((f) => _buildFileTile(f)),
-        if (_coreFiles.length > 10)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: TextButton(
-              onPressed: () {
-                setState(() {
-                  _showAllCore = !_showAllCore;
-                });
-              },
-              child: Text(
-                _showAllCore ? 'Show Less' : 'Show All (${_coreFiles.length})',
-                style: const TextStyle(color: Colors.grey),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildSectionHeader(
-    String title,
-    IconData icon,
-    List<FileItem> files,
-  ) {
-    if (files.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 12),
-        child: Row(
-          children: [
-            Icon(icon, size: 14, color: Colors.grey),
-            const SizedBox(width: 8),
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.grey,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.0,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    // Check if all are selected
-    final allSelected = files.every((f) => f.selected);
+  Widget _buildSection(_Section section, List<FileItem> files) {
+    final selectable = section.files.where((f) => !_completed.contains(f.url));
+    final allSelected =
+        selectable.isNotEmpty && selectable.every((f) => f.selected);
+    final selectedHere = section.files.where((f) => f.selected).length;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              Icon(icon, size: 14, color: Colors.grey),
+              Icon(section.icon, size: 14, color: AppTheme.textMuted),
               const SizedBox(width: 8),
               Text(
-                title,
+                '${section.title.toUpperCase()}  ',
                 style: const TextStyle(
-                  color: Colors.grey,
+                  color: AppTheme.textMuted,
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
                   letterSpacing: 1.0,
                 ),
               ),
+              if (section.files.isNotEmpty)
+                Text(
+                  '$selectedHere/${section.files.length}',
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+              const Spacer(),
+              if (selectable.isNotEmpty)
+                TextButton(
+                  onPressed: () => _setAll(section.files, !allSelected),
+                  child: Text(allSelected ? 'Deselect all' : 'Select all'),
+                ),
             ],
           ),
-          GestureDetector(
-            onTap: () => _toggleSection(files, !allSelected),
-            child: Text(
-              allSelected ? 'Deselect All' : 'Select All',
-              style: const TextStyle(
-                color: AppTheme.primaryGreen,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+          const SizedBox(height: 6),
+          if (section.files.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.03),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.border),
               ),
+              child: Text(
+                section.emptyText,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
+              ),
+            )
+          else
+            LayoutBuilder(
+              builder: (context, c) {
+                // Two columns of files on wide windows.
+                final columns = c.maxWidth >= 760 ? 2 : 1;
+                final width = (c.maxWidth - (columns - 1) * 8) / columns;
+                return Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final f in files)
+                      SizedBox(width: width, child: _buildFileTile(f)),
+                  ],
+                );
+              },
             ),
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildEmptyStateCard(String message) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: Center(
-        child: Text(
-          message,
-          style: TextStyle(color: Colors.grey[600], fontSize: 13),
-        ),
-      ),
-    );
-  }
-
   Widget _buildFileTile(FileItem file) {
-    return GestureDetector(
-      onTap: () => _toggleFile(file),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceDark,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: file.selected
-                ? AppTheme.primaryGreen.withOpacity(0.3)
-                : Colors.white10,
+    final done = _completed.contains(file.url);
+    final selected = file.selected;
+    final tagColor = switch (file.tag) {
+      'UPDATE' => Colors.orange,
+      'LANG' => Colors.lightBlueAccent,
+      'OPT' => Colors.purpleAccent,
+      _ => AppTheme.textMuted,
+    };
+
+    return Material(
+      color: AppTheme.surfaceDark,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _toggle(file),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected
+                  ? AppTheme.primaryGreen.withValues(alpha: 0.35)
+                  : AppTheme.border,
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 24,
-              height: 24,
-              decoration: BoxDecoration(
-                color: file.selected
+          child: Row(
+            children: [
+              Icon(
+                done
+                    ? LucideIcons.checkCircle2
+                    : selected
+                    ? Icons.check_box
+                    : Icons.check_box_outline_blank,
+                size: 20,
+                color: done
+                    ? AppTheme.primaryGreen.withValues(alpha: 0.6)
+                    : selected
                     ? AppTheme.primaryGreen
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                  color: file.selected ? AppTheme.primaryGreen : Colors.grey,
-                  width: 1.5,
+                    : AppTheme.textMuted,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  file.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: done ? Colors.white54 : Colors.white,
+                  ),
                 ),
               ),
-              child: file.selected
-                  ? const Icon(Icons.check, size: 16, color: Colors.black)
-                  : null,
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    file.name,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  // Hide individual sizes for now as they are all ~500MB
-                ],
-              ),
-            ),
-            if (file.tag != null)
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: file.tag == 'UPDATE'
-                      ? Colors.orange.withOpacity(0.2)
-                      : Colors.white10,
+                  color: (done ? AppTheme.primaryGreen : tagColor).withValues(
+                    alpha: 0.15,
+                  ),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  file.tag!,
+                  done ? 'DONE' : file.tag ?? '',
                   style: TextStyle(
-                    color: file.tag == 'UPDATE'
-                        ? Colors.orange
-                        : Colors.grey[400],
+                    color: done ? AppTheme.primaryGreen : tagColor,
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _buildBottomBar() {
+    final count = _selectedCount;
+    final newCount = _allFiles
+        .where((f) => f.selected && !_completed.contains(f.url))
+        .length;
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: const BoxDecoration(
-        color: Colors.black,
-        border: Border(top: BorderSide(color: Colors.white12)),
+      padding: EdgeInsets.fromLTRB(
+        context.pagePadding,
+        12,
+        context.pagePadding,
+        12 + MediaQuery.paddingOf(context).bottom,
       ),
-      child: Column(
+      decoration: const BoxDecoration(
+        color: AppTheme.backgroundDark,
+        border: Border(top: BorderSide(color: AppTheme.border)),
+      ),
+      child: Row(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Selection Size',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$count of ${_allFiles.length} files selected',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
-              ),
-              Text(
-                _formatSize(_totalSelectedSizeMB),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
+                Text(
+                  '≈ ${formatBytes(newCount * _bytesPerFile)} to download',
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            height: 50,
-            child: ElevatedButton.icon(
-              onPressed: () {
-                final selectedUrls =
-                    [
-                          ..._updatedFiles,
-                          ..._coreFiles,
-                          ..._languagePacks,
-                          ..._optionalFiles,
-                        ]
-                        .where((f) => f.selected && f.url != null)
-                        .map((f) => f.url!)
-                        .toList();
-
-                context.pop(selectedUrls);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.primaryGreen,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              icon: const Icon(LucideIcons.download, size: 20),
-              label: const Text(
-                'Download Selected',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
+              ],
             ),
+          ),
+          FilledButton.icon(
+            onPressed: count == 0 ? null : _confirm,
+            icon: Icon(
+              _manageMode ? LucideIcons.check : LucideIcons.download,
+              size: 18,
+            ),
+            label: Text(_manageMode ? 'Apply changes' : 'Download selected'),
           ),
         ],
       ),

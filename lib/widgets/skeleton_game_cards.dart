@@ -11,7 +11,7 @@ class SkeletonGameCardHorizontal extends StatelessWidget {
       baseColor: AppTheme.surfaceHighlight,
       highlightColor: Colors.white12,
       child: Container(
-        width: 350,
+        width: 300,
         decoration: BoxDecoration(
           color: Colors.black,
           borderRadius: BorderRadius.circular(12),

@@ -1,27 +1,43 @@
 import 'package:fitgirl_mobile_flutter/models/download_session.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
+import 'package:fitgirl_mobile_flutter/services/settings_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class DownloadsNotifier extends Notifier<List<DownloadSession>> {
+/// Bridges a [ValueListenable] into Riverpod state.
+class _ListenableNotifier<T> extends Notifier<T> {
+  final ValueListenable<T> Function() source;
+  _ListenableNotifier(this.source);
+
   @override
-  List<DownloadSession> build() {
-    // Listen to the service
-    final service = DownloadService();
-
-    // We attach a listener to the service's ValueNotifier
-    // When service updates sessions, we update our state
-    service.sessionsNotifier.addListener(_onServiceUpdate);
-
-    // Initial State
-    return service.sessions;
-  }
-
-  void _onServiceUpdate() {
-    state = DownloadService().sessionsNotifier.value;
+  T build() {
+    final listenable = source();
+    void listener() => state = listenable.value;
+    listenable.addListener(listener);
+    ref.onDispose(() => listenable.removeListener(listener));
+    return listenable.value;
   }
 }
 
 final downloadsProvider =
-    NotifierProvider<DownloadsNotifier, List<DownloadSession>>(
-      DownloadsNotifier.new,
+    NotifierProvider<
+      _ListenableNotifier<List<DownloadSession>>,
+      List<DownloadSession>
+    >(() => _ListenableNotifier(() => DownloadService().sessionsNotifier));
+
+final settingsProvider =
+    NotifierProvider<_ListenableNotifier<AppSettings>, AppSettings>(
+      () => _ListenableNotifier(() => SettingsService().notifier),
     );
+
+/// A single download by game title (null when it doesn't exist).
+final downloadSessionProvider = Provider.family<DownloadSession?, String>((
+  ref,
+  title,
+) {
+  final sessions = ref.watch(downloadsProvider);
+  for (final s in sessions) {
+    if (s.gameTitle == title) return s;
+  }
+  return null;
+});
