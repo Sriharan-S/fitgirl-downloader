@@ -4,6 +4,7 @@ import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 import 'package:fitgirl_mobile_flutter/models/download_session.dart';
 import 'package:fitgirl_mobile_flutter/models/game.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
+import 'package:fitgirl_mobile_flutter/services/cache_store.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -147,6 +148,7 @@ class CoverImage extends StatelessWidget {
       child: url.isEmpty
           ? _placeholder()
           : CachedNetworkImage(
+              cacheManager: appImageCache,
               imageUrl: url,
               width: width,
               height: height,

@@ -86,6 +86,17 @@ class Game {
     );
   }
 
+  static final _nsfwPattern = RegExp(
+    r'\b(adult|nsfw|hentai|erotic|eroge|porn|nudity|sexual|sex)\b|18\+',
+    caseSensitive: false,
+  );
+
+  /// Adult content, judged from FitGirl's genre tags and the title.
+  bool get isNsfw =>
+      _nsfwPattern.hasMatch(genre ?? '') ||
+      _nsfwPattern.hasMatch(tags.join(' ')) ||
+      RegExp(r'18\+|hentai|\bsex', caseSensitive: false).hasMatch(title);
+
   // To JSON
   Map<String, dynamic> toJson() {
     return {

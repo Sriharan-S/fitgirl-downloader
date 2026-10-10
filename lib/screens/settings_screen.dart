@@ -6,6 +6,7 @@ import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
 import 'package:fitgirl_mobile_flutter/services/settings_service.dart';
+import 'package:fitgirl_mobile_flutter/widgets/background_guide.dart';
 import 'package:fitgirl_mobile_flutter/widgets/update_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -153,8 +154,53 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ],
                     ),
                     _Section(
+                      title: 'Content',
+                      children: [
+                        SwitchListTile(
+                          secondary: const Icon(LucideIcons.eyeOff),
+                          title: const Text('Show NSFW games in Discover'),
+                          subtitle: const Text(
+                            'Adult games are hidden from the Discover page unless this is on',
+                            style: TextStyle(color: AppTheme.textMuted),
+                          ),
+                          value: settings.showNsfw,
+                          onChanged: (v) =>
+                              _update((s) => s.copyWith(showNsfw: v)),
+                        ),
+                      ],
+                    ),
+                    _Section(
                       title: 'Notifications',
                       children: [
+                        if (Platform.isAndroid)
+                          FutureBuilder<bool>(
+                            future: isBackgroundUnrestricted(),
+                            builder: (context, snap) {
+                              final ok = snap.data ?? true;
+                              return ListTile(
+                                leading: Icon(
+                                  LucideIcons.batteryCharging,
+                                  color: ok ? null : AppTheme.warning,
+                                ),
+                                title: const Text('Background downloads'),
+                                subtitle: Text(
+                                  ok
+                                      ? 'Battery: unrestricted, downloads keep running'
+                                      : 'Battery: restricted, Android may stop downloads. Tap to fix',
+                                  style: const TextStyle(
+                                    color: AppTheme.textMuted,
+                                  ),
+                                ),
+                                onTap: () async {
+                                  await guideBackgroundDownloads(
+                                    context,
+                                    force: true,
+                                  );
+                                  setState(() {});
+                                },
+                              );
+                            },
+                          ),
                         SwitchListTile(
                           secondary: const Icon(LucideIcons.bell),
                           title: const Text('Game finished / failed alerts'),

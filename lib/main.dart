@@ -3,6 +3,7 @@ import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/router.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
 import 'package:fitgirl_mobile_flutter/services/notification_service.dart';
+import 'package:fitgirl_mobile_flutter/widgets/browser_host.dart';
 import 'package:fitgirl_mobile_flutter/widgets/update_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -38,6 +39,7 @@ class MyApp extends StatelessWidget {
       themeMode: ThemeMode.dark,
       routerConfig: router,
       scrollBehavior: const AppScrollBehavior(),
+      builder: (context, child) => BrowserHost(child: child!),
       debugShowCheckedModeBanner: false,
     );
   }

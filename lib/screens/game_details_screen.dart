@@ -15,10 +15,12 @@ import 'package:fitgirl_mobile_flutter/services/favorites_service.dart';
 import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
 import 'package:fitgirl_mobile_flutter/services/torrent_engine.dart';
 import 'package:fitgirl_mobile_flutter/widgets/torrent_metadata_dialog.dart';
+import 'package:fitgirl_mobile_flutter/widgets/background_guide.dart';
 import 'package:fitgirl_mobile_flutter/widgets/download_option_tile.dart';
 import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
 import 'package:fitgirl_mobile_flutter/widgets/game_details_skeleton.dart';
 import 'package:fitgirl_mobile_flutter/widgets/success_action_dialog.dart';
+import 'package:fitgirl_mobile_flutter/services/cache_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,19 +64,46 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
       setState(() => _isLoading = false);
       return;
     }
-    setState(() => _isLoading = true);
-    final game = await ScraperService().getGameDetails(url);
-    final isFav = game != null && await FavoritesService().isFavorite(game.url);
+    // Last known copy first (no skeleton), then refresh quietly.
+    final cached = _game == null ? await CacheStore().readGame(url) : null;
+    if (cached != null && mounted) {
+      final isFav = await FavoritesService().isFavorite(cached.url);
+      if (!mounted) return;
+      setState(() {
+        _game = cached;
+        _isFavorite = isFav;
+        _isLoading = false;
+        _descriptionExpanded = context.isWide;
+      });
+      _warnIfAdult(cached);
+    } else if (_game == null) {
+      setState(() => _isLoading = true);
+    }
+
+    final fresh = await ScraperService().getGameDetails(url);
     if (!mounted) return;
+    if (fresh == null) {
+      // Offline: keep showing the cached copy if there is one.
+      if (_game == null) setState(() => _isLoading = false);
+      return;
+    }
+    final isFav = await FavoritesService().isFavorite(fresh.url);
+    if (!mounted) return;
+    final firstShow = _game == null;
     setState(() {
-      _game = game;
+      _game = fresh;
       _isFavorite = isFav;
       _isLoading = false;
-      _descriptionExpanded = context.isWide;
+      if (firstShow) _descriptionExpanded = context.isWide;
     });
-    if (game?.genre?.toLowerCase().contains('adult') ?? false) {
-      _showAdultContentWarning();
-    }
+    if (firstShow) _warnIfAdult(fresh);
+  }
+
+  bool _warnedAdult = false;
+  void _warnIfAdult(Game game) {
+    if (_warnedAdult || !game.isNsfw) return;
+    _warnedAdult = true;
+    _showAdultContentWarning();
   }
 
   // ---------------------------------------------------------------------------
@@ -249,6 +278,7 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
     }
 
     try {
+      if (mounted) await guideBackgroundDownloads(context);
       final result = await service.queueTorrent(
         gameTitle: game.title,
         coverUrl: game.coverUrl,
@@ -371,6 +401,7 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
     }
 
     final game = _game!;
+    if (mounted) await guideBackgroundDownloads(context);
     final result = await service.queueGame(
       gameTitle: game.title,
       coverUrl: game.coverUrl,
@@ -554,6 +585,7 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
       child: game.coverUrl.isEmpty
           ? Container(color: AppTheme.surfaceHighlight)
           : CachedNetworkImage(
+              cacheManager: appImageCache,
               imageUrl: game.coverUrl,
               fit: BoxFit.cover,
               errorWidget: (_, _, _) =>
@@ -992,7 +1024,10 @@ class _ScreenshotsState extends State<_Screenshots> {
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: AppTheme.border),
                           image: DecorationImage(
-                            image: CachedNetworkImageProvider(images[i]),
+                            image: CachedNetworkImageProvider(
+                              images[i],
+                              cacheManager: appImageCache,
+                            ),
                             fit: BoxFit.cover,
                           ),
                         ),
@@ -1110,7 +1145,10 @@ class _ImageViewerState extends State<_ImageViewer> {
               itemBuilder: (_, i) => InteractiveViewer(
                 maxScale: 4,
                 child: Center(
-                  child: CachedNetworkImage(imageUrl: widget.images[i]),
+                  child: CachedNetworkImage(
+                    cacheManager: appImageCache,
+                    imageUrl: widget.images[i],
+                  ),
                 ),
               ),
             ),

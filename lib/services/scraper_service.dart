@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
+import 'package:fitgirl_mobile_flutter/services/browser_resolver.dart';
+import 'package:fitgirl_mobile_flutter/services/cache_store.dart';
 import 'package:fitgirl_mobile_flutter/services/web_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
@@ -65,7 +68,8 @@ class ScraperService {
       for (var i = 0; i < links.length; i += batchSize) {
         final batch = links.skip(i).take(batchSize).map(getGameDetails);
         for (final game in await Future.wait(batch)) {
-          if (game != null) yield game.copyWith(genre: 'Popular');
+          // Keep the real genres: they are needed for the NSFW filter.
+          if (game != null) yield game;
         }
       }
     } catch (e) {
@@ -178,7 +182,10 @@ class ScraperService {
       return cached.$2;
     }
     final game = await _fetchGameDetails(url);
-    if (game != null) _detailsCache[url] = (DateTime.now(), game);
+    if (game != null) {
+      _detailsCache[url] = (DateTime.now(), game);
+      unawaited(CacheStore().writeGame(game));
+    }
     return game;
   }
 
@@ -568,14 +575,158 @@ class ScraperService {
 
   /// Resolves a mirror page (FuckingFast, DataNodes) to a direct download
   /// link. Throws [MirrorException] with a user-readable reason on failure.
-  Future<String?> getDirectDownloadLink(String url) async {
+  Future<ResolvedLink?> getDirectDownloadLink(String url) async {
     debugPrint('ScraperService: Extracting direct link for $url');
     if (url.contains('fuckingfast.co')) {
-      return _getFuckingFastLink(url);
+      return _viaHttpThenBrowser(
+        'FuckingFast',
+        http: () async => ResolvedLink(await _getFuckingFastLink(url) ?? '', {
+          'Referer': 'https://fuckingfast.co/',
+        }),
+        browser: () => BrowserResolver().resolve(
+          pageUrl: _fuckingFastPage(url),
+          readyJs: _fuckingFastReadyJs,
+          extractJs: _fuckingFastExtractJs,
+          captureHosts: const {'dl.fuckingfast.co'},
+        ),
+      );
     } else if (url.contains('datanodes.to')) {
-      return _getDataNodesLink(url);
+      return _viaHttpThenBrowser(
+        'DataNodes',
+        http: () async => ResolvedLink(await _getDataNodesLink(url) ?? '', {
+          'Referer': 'https://datanodes.to/',
+        }),
+        browser: () => BrowserResolver().resolve(
+          pageUrl: url.trim(),
+          readyJs: _cloudflarePassedJs,
+          extractJs: _dataNodesExtractJs(url),
+        ),
+      );
     }
     return null;
+  }
+
+  /// Plain HTTP first (fast); file hosts behind Cloudflare challenge that,
+  /// so fall back to a real browser engine where available.
+  Future<ResolvedLink> _viaHttpThenBrowser(
+    String host, {
+    required Future<ResolvedLink> Function() http,
+    required Future<ResolvedLink> Function() browser,
+  }) async {
+    MirrorException httpError;
+    try {
+      final link = await http();
+      if (link.url.startsWith('http')) return link;
+      httpError = MirrorException('$host did not return a download link');
+    } on MirrorException catch (e) {
+      if (e.permanent) rethrow;
+      httpError = e;
+    } catch (e) {
+      httpError = MirrorException('Could not reach $host: $e');
+    }
+    if (!BrowserResolver.isSupported) {
+      throw MirrorException(
+        '${httpError.message}. $host blocks apps with a browser check; '
+        'use the other mirror or the torrent',
+      );
+    }
+    try {
+      return await browser();
+    } on BrowserException catch (e) {
+      final removed = e.message.contains('removed');
+      throw MirrorException('$host: ${e.message}', permanent: removed);
+    }
+  }
+
+  static String _fuckingFastPage(String url) {
+    final segments = Uri.parse(
+      url.trim(),
+    ).pathSegments.where((s) => s.isNotEmpty).toList();
+    final id = segments.first == 'f' && segments.length > 1
+        ? segments[1]
+        : segments.first;
+    return 'https://fuckingfast.co/$id';
+  }
+
+  /// Cloudflare's check is done once the real page is there.
+  static const _cloudflarePassedJs =
+      "document.readyState === 'complete' && "
+      "!/just a moment|attention required/i.test(document.title) && "
+      "!document.querySelector('#challenge-form, #challenge-stage, "
+      "iframe[src*=\"challenges.cloudflare.com\"]:not([style*=\"display: none\"])')";
+
+  static const _fuckingFastReadyJs =
+      "document.querySelector('[hx-post*=\"/go\"]') !== null || "
+      "(document.readyState === 'complete' && "
+      "/not found|deleted|removed|no longer/i.test(document.body.innerText.slice(0, 2000)))";
+
+  /// POST the button's htmx endpoint and read HX-Redirect; if that doesn't
+  /// answer, click the real button (the redirect to dl.* is captured).
+  static const _fuckingFastExtractJs = r'''
+(async () => {
+  const send = (o) => FGBridge.postMessage(JSON.stringify(o));
+  try {
+    const btn = document.querySelector('[hx-post*="/go"]');
+    if (!btn) {
+      send({error: 'File was removed from FuckingFast'});
+      return;
+    }
+    const r = await fetch(btn.getAttribute('hx-post'), {
+      method: 'POST',
+      credentials: 'include',
+      headers: {'HX-Request': 'true', 'HX-Current-URL': location.href},
+    });
+    const link = r.headers.get('HX-Redirect');
+    if (link) { send({url: link}); return; }
+    btn.click();
+    setTimeout(() => btn.click(), 1500);
+  } catch (e) {
+    send({error: String(e)});
+  }
+})();
+''';
+
+  static String _dataNodesExtractJs(String fileUrl) {
+    final uri = Uri.parse(fileUrl.trim());
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    final code = jsonEncode(segments.isEmpty ? '' : segments.first);
+    final target = jsonEncode(uri.toString());
+    return '''
+(async () => {
+  const send = (o) => FGBridge.postMessage(JSON.stringify(o));
+  try {
+    if (/file not found|file was removed|no such file/i.test(document.body.innerText)) {
+      send({error: 'File was removed from DataNodes'});
+      return;
+    }
+    const code = $code;
+    const base = {op: 'download2', id: code, rand: '', method_free: 'Free Download >>', method_premium: ''};
+    const variants = [
+      [$target, Object.assign({}, base, {referer: '', g_captch__a: '1'}), false],
+      [location.origin + '/download', Object.assign({}, base, {referer: location.origin + '/download', __dl: '1', g_captch__a: '1'}), true],
+      [location.origin + '/download', Object.assign({}, base, {referer: location.origin + '/download', dl: '1'}), false],
+    ];
+    for (const [url, fields, multipart] of variants) {
+      let body;
+      if (multipart) {
+        body = new FormData();
+        for (const k in fields) body.append(k, fields[k]);
+      } else {
+        body = new URLSearchParams(fields);
+      }
+      const r = await fetch(url, {method: 'POST', body, credentials: 'include'});
+      const text = await r.text();
+      try {
+        const j = JSON.parse(text);
+        if (j && j.url) { send({url: decodeURIComponent(j.url)}); return; }
+      } catch (_) {}
+    }
+    send({error: 'DataNodes did not return a download link'});
+  } catch (e) {
+    send({error: String(e)});
+  }
+})();
+''';
   }
 
   /// Other mirrors of the same file, matched by file name, taken from the

@@ -7,6 +7,7 @@ import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 import 'package:fitgirl_mobile_flutter/models/download_session.dart';
 import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
 import 'package:fitgirl_mobile_flutter/router.dart';
+import 'package:fitgirl_mobile_flutter/services/cache_store.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
 import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
 import 'package:fitgirl_mobile_flutter/widgets/featured_carousel.dart';
@@ -42,12 +43,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   bool _loadingMore = false;
   bool _hasMore = true;
   int _offset = 0;
+  bool _refreshing = false; // Background refresh over cached data
 
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
-    _refresh();
+    _start();
     // Ask for notification/battery/storage permissions once the UI is up.
     Future.delayed(const Duration(seconds: 1), () {
       if (mounted) DownloadService().ensureBackgroundPermissions();
@@ -61,6 +63,89 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
     _scrollController.dispose();
     _popularController.dispose();
     super.dispose();
+  }
+
+  /// Shows what was cached last time right away, then refreshes quietly.
+  Future<void> _start() async {
+    final cached = await Future.wait([
+      CacheStore().readList('popular'),
+      CacheStore().readList('newly'),
+    ]);
+    if (!mounted) return;
+    final popular = cached[0] ?? const [];
+    final newly = cached[1] ?? const [];
+    if (popular.isEmpty && newly.isEmpty) {
+      await _refresh(); // First run: stream in with skeletons
+      return;
+    }
+    setState(() {
+      _popular.addAll(popular);
+      _newlyAdded.addAll(newly);
+      _popularLoading = false;
+      _newLoading = false;
+      _offset = (newly.length / _pageSize).ceil() * _pageSize;
+    });
+    await _refreshQuietly();
+  }
+
+  /// Fetches fresh lists without clearing what is shown, then swaps them in
+  /// at once (no skeletons, no partial lists).
+  Future<void> _refreshQuietly() async {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      final freshPopular = <Game>[];
+      final freshNew = <Game>[];
+      await Future.wait([
+        ScraperService().streamPopularGames().forEach(freshPopular.add),
+        ScraperService()
+            .streamNewlyAddedGames(count: _pageSize)
+            .forEach(freshNew.add),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        if (freshPopular.isNotEmpty) {
+          _popular
+            ..clear()
+            ..addAll(freshPopular);
+        }
+        if (freshNew.isNotEmpty) {
+          final seen = freshNew.map((g) => g.url).toSet();
+          // toList(): evaluate before the list is cleared below.
+          final older = _newlyAdded
+              .where((g) => !seen.contains(g.url))
+              .toList();
+          _newlyAdded
+            ..clear()
+            ..addAll([...freshNew, ...older]);
+          _offset = _pageSize;
+          _hasMore = true;
+        }
+      });
+      _saveCache();
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  void _saveCache() {
+    if (_popular.isNotEmpty) {
+      unawaited(CacheStore().writeList('popular', _popular));
+    }
+    if (_newlyAdded.isNotEmpty) {
+      unawaited(
+        CacheStore().writeList(
+          'newly',
+          _newlyAdded.take(_pageSize * 2).toList(),
+        ),
+      );
+    }
+  }
+
+  /// Pull-to-refresh / refresh button.
+  Future<void> _pullRefresh() async {
+    if (_popular.isEmpty && _newlyAdded.isEmpty) return _refresh();
+    return _refreshQuietly();
   }
 
   Future<void> _refresh() async {
@@ -84,10 +169,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
       },
     );
     await Future.wait([popularDone.future, _loadNewlyAdded(reset: true)]);
+    _saveCache();
   }
 
   Future<void> _loadNewlyAdded({bool reset = false}) async {
-    if (!reset && (_loadingMore || _newLoading || !_hasMore)) return;
+    if (!reset && (_loadingMore || _newLoading || _refreshing || !_hasMore)) {
+      return;
+    }
     final done = Completer<void>();
     setState(() => _loadingMore = !reset);
     final before = _newlyAdded.length;
@@ -109,6 +197,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                     _newlyAdded.length > before &&
                     ScraperService().hasMoreNewlyAdded(_offset);
               });
+              if (!reset) _saveCache();
             }
             done.complete();
           },
@@ -136,8 +225,16 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   @override
   Widget build(BuildContext context) {
     final wide = context.isWide;
-    final featured = _popular.take(_featuredCount).toList();
-    final shelf = _popular.skip(_featuredCount).toList();
+    // Adult games stay hidden unless enabled in Settings.
+    final showNsfw = ref.watch(settingsProvider).showNsfw;
+    final popular = showNsfw
+        ? _popular
+        : _popular.where((g) => !g.isNsfw).toList();
+    final newlyAdded = showNsfw
+        ? _newlyAdded
+        : _newlyAdded.where((g) => !g.isNsfw).toList();
+    final featured = popular.take(_featuredCount).toList();
+    final shelf = popular.skip(_featuredCount).toList();
     final active = ref
         .watch(downloadsProvider)
         .where((s) => !s.isCompleted)
@@ -153,7 +250,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
       body: SafeArea(
         child: RefreshIndicator(
           color: AppTheme.primaryGreen,
-          onRefresh: _refresh,
+          onRefresh: _pullRefresh,
           child: Scrollbar(
             controller: _scrollController,
             child: CustomScrollView(
@@ -169,7 +266,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                         if (isDesktopPlatform)
                           IconButton(
                             tooltip: 'Refresh',
-                            onPressed: _refresh,
+                            onPressed: _pullRefresh,
                             icon: const Icon(LucideIcons.refreshCw),
                           ),
                       ],
@@ -276,13 +373,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                       ),
                       delegate: SliverChildBuilderDelegate(
                         (context, index) {
-                          if (index >= _newlyAdded.length) {
+                          if (index >= newlyAdded.length) {
                             return const SkeletonGameCardVertical();
                           }
-                          return GameCardVertical(game: _newlyAdded[index]);
+                          return GameCardVertical(game: newlyAdded[index]);
                         },
                         childCount:
-                            _newlyAdded.length +
+                            newlyAdded.length +
                             (_newLoading || _loadingMore ? 6 : 0),
                       ),
                     ),

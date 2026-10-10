@@ -20,13 +20,17 @@ class AppSettings {
   /// Keep uploading torrents after they finish.
   final bool seedTorrents;
 
+  /// Show adult (NSFW) games on the Discover page. Off by default.
+  final bool showNsfw;
+
   const AppSettings({
     this.downloadPath,
-    this.maxConcurrent = 2,
+    this.maxConcurrent = 1,
     this.autoRetries = 3,
     this.notificationsEnabled = true,
     this.oneGameAtATime = false,
     this.seedTorrents = false,
+    this.showNsfw = false,
   });
 
   AppSettings copyWith({
@@ -36,6 +40,7 @@ class AppSettings {
     bool? notificationsEnabled,
     bool? oneGameAtATime,
     bool? seedTorrents,
+    bool? showNsfw,
   }) {
     return AppSettings(
       downloadPath: downloadPath ?? this.downloadPath,
@@ -44,6 +49,7 @@ class AppSettings {
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       oneGameAtATime: oneGameAtATime ?? this.oneGameAtATime,
       seedTorrents: seedTorrents ?? this.seedTorrents,
+      showNsfw: showNsfw ?? this.showNsfw,
     );
   }
 }
@@ -54,11 +60,13 @@ class SettingsService {
   SettingsService._internal();
 
   static const _kPath = 'custom_download_path'; // Kept from v1 for migration
-  static const _kConcurrent = 'max_concurrent_downloads';
+  // v2: the default changed to sequential (one file at a time).
+  static const _kConcurrent = 'max_concurrent_downloads_v2';
   static const _kRetries = 'auto_retries';
   static const _kNotifications = 'notifications_enabled';
   static const _kOneGame = 'one_game_at_a_time';
   static const _kSeed = 'seed_torrents';
+  static const _kNsfw = 'show_nsfw';
 
   final ValueNotifier<AppSettings> notifier = ValueNotifier(
     const AppSettings(),
@@ -70,11 +78,12 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     notifier.value = AppSettings(
       downloadPath: prefs.getString(_kPath),
-      maxConcurrent: prefs.getInt(_kConcurrent) ?? 2,
+      maxConcurrent: prefs.getInt(_kConcurrent) ?? 1,
       autoRetries: prefs.getInt(_kRetries) ?? 3,
       notificationsEnabled: prefs.getBool(_kNotifications) ?? true,
       oneGameAtATime: prefs.getBool(_kOneGame) ?? false,
       seedTorrents: prefs.getBool(_kSeed) ?? false,
+      showNsfw: prefs.getBool(_kNsfw) ?? false,
     );
   }
 
@@ -89,5 +98,6 @@ class SettingsService {
     await prefs.setBool(_kNotifications, settings.notificationsEnabled);
     await prefs.setBool(_kOneGame, settings.oneGameAtATime);
     await prefs.setBool(_kSeed, settings.seedTorrents);
+    await prefs.setBool(_kNsfw, settings.showNsfw);
   }
 }

@@ -6,6 +6,7 @@ import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/models/game.dart';
 import 'package:fitgirl_mobile_flutter/router.dart';
+import 'package:fitgirl_mobile_flutter/services/cache_store.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shimmer/shimmer.dart';
@@ -180,6 +181,7 @@ class _FeaturedSlide extends StatelessWidget {
               ImageFiltered(
                 imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                 child: CachedNetworkImage(
+                  cacheManager: appImageCache,
                   imageUrl: game.coverUrl,
                   fit: BoxFit.cover,
                   memCacheWidth: 300,
@@ -206,6 +208,7 @@ class _FeaturedSlide extends StatelessWidget {
                       child: game.coverUrl.isEmpty
                           ? Container(color: AppTheme.surfaceHighlight)
                           : CachedNetworkImage(
+                              cacheManager: appImageCache,
                               imageUrl: game.coverUrl,
                               fit: BoxFit.cover,
                               memCacheWidth: 500,

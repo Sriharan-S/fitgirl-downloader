@@ -24,7 +24,7 @@ void main() {
       final link = await ScraperService().getDirectDownloadLink(
         'https://fuckingfast.co/jvqv32niba75#Game.part01.rar',
       );
-      expect(link, 'https://dl.fuckingfast.co/dl/abc');
+      expect(link?.url, 'https://dl.fuckingfast.co/dl/abc');
       expect(seen.method, 'POST');
       expect(seen.url.toString(), 'https://fuckingfast.co/f/jvqv32niba75/go');
       expect(seen.headers['HX-Request'], 'true');
@@ -59,7 +59,7 @@ void main() {
       final link = await ScraperService().getDirectDownloadLink(
         'https://datanodes.to/6jimwv4wv1lc/Game.rar',
       );
-      expect(link, 'https://cdn.example/f/Game.rar');
+      expect(link?.url, 'https://cdn.example/f/Game.rar');
       expect(posts.single.url.path, '/6jimwv4wv1lc/Game.rar');
       expect(posts.single.bodyFields['op'], 'download2');
       expect(posts.single.bodyFields['g_captch__a'], '1');

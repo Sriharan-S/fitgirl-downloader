@@ -3,6 +3,8 @@ import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 import 'package:fitgirl_mobile_flutter/models/download_session.dart';
 import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -75,50 +77,174 @@ class AppShell extends ConsumerWidget {
     } else {
       body = Scaffold(
         body: navigationShell,
-        // Fixed Material bar: every item keeps the same size and always
-        // shows its label; selection only changes the colour (no growing
-        // indicator or label animation).
-        bottomNavigationBar: DecoratedBox(
-          decoration: const BoxDecoration(
-            border: Border(top: BorderSide(color: AppTheme.border)),
-          ),
-          child: BottomNavigationBar(
-            type: BottomNavigationBarType.fixed,
-            currentIndex: navigationShell.currentIndex,
-            onTap: _go,
-            backgroundColor: AppTheme.surfaceDark,
-            elevation: 0,
-            selectedItemColor: AppTheme.primaryGreen,
-            unselectedItemColor: AppTheme.textMuted,
-            iconSize: 22,
-            selectedFontSize: 12,
-            unselectedFontSize: 12,
-            selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
-            unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
-            showSelectedLabels: true,
-            showUnselectedLabels: true,
-            items: [
-              for (var i = 0; i < _destinations.length; i++)
-                BottomNavigationBarItem(
-                  icon: Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: _BadgedIcon(
-                      icon: _destinations[i].icon,
-                      count: i == _downloadsIndex ? active.length : 0,
-                    ),
-                  ),
-                  label: _destinations[i].label,
-                  tooltip: '',
-                ),
-            ],
-          ),
+        bottomNavigationBar: _ChipNavBar(
+          currentIndex: navigationShell.currentIndex,
+          onSelect: _go,
+          downloadsBadge: active.length,
         ),
       );
     }
 
-    return CallbackShortcuts(
-      bindings: shortcuts,
-      child: Focus(autofocus: true, child: body),
+    // Back: inner pages pop as usual (the tab's own navigator handles them
+    // first). On a tab's root, go to Discover; on Discover, confirm exit.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _onBack(context, sessions);
+      },
+      child: CallbackShortcuts(
+        bindings: shortcuts,
+        child: Focus(autofocus: true, child: body),
+      ),
+    );
+  }
+
+  Future<void> _onBack(
+    BuildContext context,
+    List<DownloadSession> sessions,
+  ) async {
+    if (navigationShell.currentIndex != 0) {
+      _go(0);
+      return;
+    }
+    final running = sessions.any((s) => !s.isCompleted && !s.isPaused);
+    final exit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Exit FitGirl Downloader?'),
+        content: Text(
+          running
+              ? 'Downloads keep running in the background.'
+              : 'You can come back any time.',
+          style: const TextStyle(color: AppTheme.textMuted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Stay'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Exit'),
+          ),
+        ],
+      ),
+    );
+    if (exit != true) return;
+    if (running && Platform.isAndroid) {
+      // Leave the app without closing it so downloads continue.
+      await const MethodChannel(
+        'fitgirl/native',
+      ).invokeMethod('moveTaskToBack');
+    } else {
+      await SystemNavigator.pop();
+    }
+  }
+}
+
+/// Bottom navigation: every item has the same width and always shows its
+/// icon and name; the selected one sits inside a filled pill (chip). No
+/// size or position changes on selection, only colours.
+class _ChipNavBar extends StatelessWidget {
+  final int currentIndex;
+  final ValueChanged<int> onSelect;
+  final int downloadsBadge;
+
+  const _ChipNavBar({
+    required this.currentIndex,
+    required this.onSelect,
+    required this.downloadsBadge,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.surfaceDark,
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: AppTheme.border)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 72,
+            child: Row(
+              children: [
+                for (var i = 0; i < _destinations.length; i++)
+                  Expanded(
+                    child: _ChipNavItem(
+                      destination: _destinations[i],
+                      selected: i == currentIndex,
+                      badge: i == _downloadsIndex ? downloadsBadge : 0,
+                      onTap: () => onSelect(i),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChipNavItem extends StatelessWidget {
+  final _Destination destination;
+  final bool selected;
+  final int badge;
+  final VoidCallback onTap;
+
+  const _ChipNavItem({
+    required this.destination,
+    required this.selected,
+    required this.badge,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = selected ? Colors.black : AppTheme.textMuted;
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: destination.label,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        child: Material(
+          color: selected ? AppTheme.primaryGreen : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Badge(
+                  isLabelVisible: badge > 0,
+                  backgroundColor: selected
+                      ? Colors.black
+                      : AppTheme.primaryGreen,
+                  textColor: selected ? AppTheme.primaryGreen : Colors.black,
+                  label: Text('$badge'),
+                  child: Icon(destination.icon, size: 21, color: color),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  destination.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.fade,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

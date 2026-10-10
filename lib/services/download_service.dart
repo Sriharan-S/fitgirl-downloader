@@ -7,11 +7,13 @@ import 'package:file_picker/file_picker.dart';
 import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
 import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 import 'package:fitgirl_mobile_flutter/models/download_session.dart';
+import 'package:fitgirl_mobile_flutter/services/browser_resolver.dart';
 import 'package:fitgirl_mobile_flutter/services/notification_service.dart';
 import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
 import 'package:fitgirl_mobile_flutter/services/settings_service.dart';
 import 'package:fitgirl_mobile_flutter/services/torrent_engine.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -76,25 +78,6 @@ class DownloadService {
         (Config.useCacheDir, Config.never),
         (Config.runInForeground, Config.always),
       ],
-    );
-
-    // One grouped, progress-bar notification for all running files (mobile).
-    FileDownloader().configureNotificationForGroup(
-      _taskGroup,
-      running: const TaskNotification(
-        'Downloading {numFinished}/{numTotal} files',
-        '{progress} • {networkSpeed}',
-      ),
-      complete: const TaskNotification(
-        'Downloads finished',
-        '{numFinished} files downloaded',
-      ),
-      error: const TaskNotification(
-        'Some downloads failed',
-        '{numFailed} failed • open the app to retry',
-      ),
-      progressBar: true,
-      groupNotificationId: 'fitgirl_downloads',
     );
 
     FileDownloader().registerCallbacks(
@@ -483,9 +466,6 @@ class DownloadService {
   Future<void> ensureBackgroundPermissions() async {
     await NotificationService().requestPermission();
     if (!Platform.isAndroid) return;
-    if (await Permission.ignoreBatteryOptimizations.status.isDenied) {
-      await Permission.ignoreBatteryOptimizations.request();
-    }
     await requestStoragePermission();
   }
 
@@ -547,7 +527,7 @@ class DownloadService {
     if (file == null) return;
     _changed();
 
-    String? direct;
+    ResolvedLink? direct;
     String? error;
     var permanent = false;
     try {
@@ -606,7 +586,11 @@ class DownloadService {
             (f) => f.copyWith(status: FileStatus.downloading),
           );
           _changed();
-          if (await FileDownloader().resume(stored.copyWith(url: direct))) {
+          final refreshed = stored.copyWith(
+            url: direct.url,
+            headers: {...stored.headers, ...direct.headers},
+          );
+          if (await FileDownloader().resume(refreshed)) {
             _changed(saveNow: true);
             return;
           }
@@ -645,20 +629,21 @@ class DownloadService {
   /// Turns a file's mirror page into a direct link. Tries the file's own
   /// mirror, then the same file on other mirrors (looked up from the game
   /// page if not known yet). Throws [MirrorException] with the last reason.
-  Future<String> _resolveDirectLink(String title, String url) async {
+  Future<ResolvedLink> _resolveDirectLink(String title, String url) async {
     final file = _findFile(title, url);
     if (file == null) throw const MirrorException('File was removed');
-    if (!_isHostedMirror(url)) return url; // Already a direct link
+    if (!_isHostedMirror(url)) return ResolvedLink(url); // Already direct
 
     String? lastError;
     var allPermanent = true;
-    Future<String?> tryEach(List<String> candidates) async {
+    Future<ResolvedLink?> tryEach(List<String> candidates) async {
       for (final candidate in candidates) {
-        if (!_isHostedMirror(candidate)) return candidate;
+        if (!_isHostedMirror(candidate)) return ResolvedLink(candidate);
         try {
+          // Generous: may include a browser check the user completes.
           final link = await ScraperService()
               .getDirectDownloadLink(candidate)
-              .timeout(const Duration(seconds: 60));
+              .timeout(const Duration(minutes: 4));
           if (link != null) return link;
           lastError = 'Mirror did not return a download link';
           allPermanent = false;
@@ -704,22 +689,23 @@ class DownloadService {
   Future<DownloadTask> _buildTask(
     String title,
     String url,
-    String direct,
+    ResolvedLink direct,
   ) async {
     String fileName = fileNameFromUrl(url);
     if (fileName.length < 5 || !fileName.contains('.')) {
-      fileName = fileNameFromUrl(direct);
+      fileName = fileNameFromUrl(direct.url);
     }
     fileName = sanitizeFileName(fileName);
 
     final (baseDirectory, directory) = await _taskLocation(title);
     return DownloadTask(
-      url: direct,
+      url: direct.url,
       filename: fileName,
       directory: directory,
       baseDirectory: baseDirectory,
       group: _taskGroup,
-      headers: const {'User-Agent': _userAgent},
+      // The resolver's headers (browser user-agent, cookies, referer) win.
+      headers: {'User-Agent': _userAgent, ...direct.headers},
       updates: Updates.statusAndProgress,
       retries: 2,
       allowPause: true,
@@ -1087,6 +1073,70 @@ class DownloadService {
   void _emit() {
     _emitTimer = null;
     sessionsNotifier.value = List.unmodifiable(_sessions);
+    _scheduleProgressNotifications();
+  }
+
+  // ===========================================================================
+  // Live progress notifications (Android)
+  // ===========================================================================
+
+  static const _native = MethodChannel('fitgirl/native');
+  Timer? _notifyTimer;
+  String _lastNotified = '';
+
+  void _scheduleProgressNotifications() {
+    if (kIsWeb || !Platform.isAndroid) return;
+    _notifyTimer ??= Timer(const Duration(seconds: 1), () {
+      _notifyTimer = null;
+      unawaited(_pushProgressNotifications());
+    });
+  }
+
+  /// One standard notification per running game: overall progress and
+  /// speed for torrents; the file being downloaded for direct links.
+  Future<void> _pushProgressNotifications() async {
+    final items = <Map<String, Object>>[];
+    for (final s in _sessions) {
+      final status = s.status;
+      if (status != SessionStatus.downloading &&
+          status != SessionStatus.queued) {
+        continue;
+      }
+      final pct = (s.overallProgress * 100).floor();
+      final speed = formatSpeed(s.networkSpeed);
+      String text;
+      if (s.isTorrent) {
+        text = '$pct% • $speed';
+      } else {
+        final active = s.files.where((f) => f.status.isActive).toList();
+        final files = '${s.completedCount}/${s.totalFiles} files';
+        if (active.isEmpty) {
+          text = 'Waiting • $files';
+        } else {
+          final more = active.length > 1 ? ' +${active.length - 1}' : '';
+          final what = active.first.status == FileStatus.resolving
+              ? 'Getting link: ${active.first.name}'
+              : active.first.name;
+          text = '$what$more • $speed • $files';
+        }
+      }
+      items.add({
+        'id': s.gameTitle.hashCode & 0x3fff,
+        'title': s.gameTitle,
+        'text': text,
+        'progress': pct,
+      });
+    }
+    final key = items.toString();
+    if (key == _lastNotified) return;
+    _lastNotified = key;
+    try {
+      await _native.invokeMethod('updateDownloadNotifications', {
+        'items': items,
+      });
+    } catch (e) {
+      debugPrint('DownloadService: progress notification failed: $e');
+    }
   }
 
   void _flushSave() {

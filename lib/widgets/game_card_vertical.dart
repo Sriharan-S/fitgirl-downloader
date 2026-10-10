@@ -3,6 +3,7 @@ import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/models/game.dart';
 import 'package:fitgirl_mobile_flutter/router.dart';
 import 'package:fitgirl_mobile_flutter/widgets/hoverable.dart';
+import 'package:fitgirl_mobile_flutter/services/cache_store.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -34,6 +35,7 @@ class GameCardVertical extends StatelessWidget {
                   child: game.coverUrl.isEmpty
                       ? _placeholder()
                       : CachedNetworkImage(
+                          cacheManager: appImageCache,
                           imageUrl: game.coverUrl,
                           fit: BoxFit.cover,
                           memCacheWidth: 400,
