@@ -600,6 +600,7 @@ class ScraperService {
           pageUrl: url.trim(),
           readyJs: _cloudflarePassedJs,
           extractJs: _dataNodesExtractJs(url),
+          extractTimeout: const Duration(minutes: 2),
         ),
       );
     }
@@ -686,48 +687,129 @@ class ScraperService {
 })();
 ''';
 
+  /// Step 1 (`download1`), then step 2: a Cloudflare Turnstile check and a
+  /// countdown before `download2` answers with JSON `{url}`. The check runs
+  /// in an overlay; it usually passes by itself, and if it wants a tap the
+  /// page is shown (`{show: true}`).
   static String _dataNodesExtractJs(String fileUrl) {
-    final uri = Uri.parse(fileUrl.trim());
-    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-    final code = jsonEncode(segments.isEmpty ? '' : segments.first);
-    final target = jsonEncode(uri.toString());
-    return '''
+    final segments = Uri.parse(
+      fileUrl.trim(),
+    ).pathSegments.where((s) => s.isNotEmpty).toList();
+    final code = segments.isEmpty ? '' : segments.first;
+    final name = segments.length > 1 ? segments.last : '';
+    return _dataNodesJs
+        .replaceAll('__CODE__', jsonEncode(code))
+        .replaceAll('__FNAME__', jsonEncode(name));
+  }
+
+  @visibleForTesting
+  static String dataNodesExtractJsForTest(String fileUrl) =>
+      _dataNodesExtractJs(fileUrl);
+
+  static const _dataNodesJs = r'''
 (async () => {
   const send = (o) => FGBridge.postMessage(JSON.stringify(o));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const removed = (t) => /file not found|file was removed|no such file|file has been deleted/i.test(t);
   try {
-    if (/file not found|file was removed|no such file/i.test(document.body.innerText)) {
+    if (removed(document.body ? document.body.innerText : '')) {
       send({error: 'File was removed from DataNodes'});
       return;
     }
-    const code = $code;
-    const base = {op: 'download2', id: code, rand: '', method_free: 'Free Download >>', method_premium: ''};
-    const variants = [
-      [$target, Object.assign({}, base, {referer: '', g_captch__a: '1'}), false],
-      [location.origin + '/download', Object.assign({}, base, {referer: location.origin + '/download', __dl: '1', g_captch__a: '1'}), true],
-      [location.origin + '/download', Object.assign({}, base, {referer: location.origin + '/download', dl: '1'}), false],
-    ];
-    for (const [url, fields, multipart] of variants) {
-      let body;
-      if (multipart) {
-        body = new FormData();
-        for (const k in fields) body.append(k, fields[k]);
-      } else {
-        body = new URLSearchParams(fields);
-      }
-      const r = await fetch(url, {method: 'POST', body, credentials: 'include'});
-      const text = await r.text();
-      try {
-        const j = JSON.parse(text);
-        if (j && j.url) { send({url: decodeURIComponent(j.url)}); return; }
-      } catch (_) {}
+    const endpoint = location.origin + '/download';
+
+    // Step 1 of 2: the "Continue to Download" form.
+    const step1 = new URLSearchParams({
+      op: 'download1', usr_login: '', id: __CODE__, fname: __FNAME__,
+      referer: '', method_free: 'Free Download >>',
+    });
+    const form = document.getElementById('downloadForm');
+    if (form) for (const [k, v] of new FormData(form)) step1.set(k, v);
+    const r1 = await fetch(endpoint, {method: 'POST', body: step1, credentials: 'include'});
+    const startedAt = Date.now();
+    const html = await r1.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const dc = doc.querySelector('download-countdown');
+    if (!dc) {
+      send({error: removed(doc.body ? doc.body.innerText : html)
+        ? 'File was removed from DataNodes'
+        : 'DataNodes changed its download page'});
+      return;
     }
-    send({error: 'DataNodes did not return a download link'});
+    const attr = (n, d = '') => dc.getAttribute(n) ?? d;
+
+    // Step 2 of 2: a captcha (Cloudflare Turnstile) and a countdown.
+    const extra = {};
+    const captchaHtml = attr('captcha-html');
+    if (attr(':has-captcha') === 'true' && captchaHtml) {
+      const key = /data-sitekey=["']([^"']+)/.exec(captchaHtml);
+      if (!/cf-turnstile/.test(captchaHtml) || !key) {
+        send({error: 'DataNodes asks for a captcha the app cannot show'});
+        return;
+      }
+      extra['cf-turnstile-response'] = await new Promise((resolve, reject) => {
+        // Full-page overlay so only the check is visible if a tap is needed.
+        const box = document.createElement('div');
+        box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#121212;' +
+          'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+          'gap:16px;color:#ddd;font:15px sans-serif;text-align:center;padding:16px';
+        box.innerHTML = '<div>DataNodes needs a quick check before the download</div>';
+        const slot = document.createElement('div');
+        box.appendChild(slot);
+        document.body.appendChild(box);
+        let shown = false;
+        const show = () => { if (!shown) { shown = true; send({show: true}); } };
+        const timer = setTimeout(show, 20000);
+        const render = () => {
+          try {
+            window.turnstile.render(slot, {
+              sitekey: key[1],
+              callback: (token) => {
+                clearTimeout(timer);
+                if (shown) send({show: false});
+                box.remove();
+                resolve(token);
+              },
+              'before-interactive-callback': show,
+              'error-callback': () => { show(); },
+            });
+          } catch (e) { reject(e); }
+        };
+        if (window.turnstile) { render(); return; }
+        const s = document.createElement('script');
+        s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+        s.onload = render;
+        s.onerror = () => reject(new Error('Could not load the DataNodes check'));
+        document.head.appendChild(s);
+      });
+    }
+    const wait = parseInt(attr(':countdown', '0'), 10) || 0;
+    const left = startedAt + (wait + 1) * 1000 - Date.now();
+    if (left > 0) await sleep(left);
+
+    const body = new FormData();
+    body.append('op', 'download2');
+    body.append('id', attr('code', __CODE__));
+    body.append('rand', attr('rand'));
+    body.append('referer', attr('referer'));
+    body.append('method_free', attr('free-method', 'Free Download >>'));
+    body.append('method_premium', attr('premium-method'));
+    body.append('g_captch__a', '1');
+    if (attr('dl-token')) body.append('dl_token', attr('dl-token'));
+    for (const k in extra) body.append(k, extra[k]);
+    const r2 = await fetch(endpoint, {
+      method: 'POST', body, credentials: 'include',
+      headers: {'X-Dn-Dl': '1'}, redirect: 'manual',
+    });
+    let j = null;
+    try { j = JSON.parse(await r2.text()); } catch (_) {}
+    if (j && j.url) { send({url: decodeURIComponent(j.url)}); return; }
+    send({error: j && j.error ? 'DataNodes: ' + j.error : 'DataNodes did not return a download link'});
   } catch (e) {
-    send({error: String(e)});
+    send({error: String(e && e.message || e)});
   }
 })();
 ''';
-  }
 
   /// Other mirrors of the same file, matched by file name, taken from the
   /// game page (e.g. the FuckingFast copy of a DataNodes file).
@@ -809,9 +891,13 @@ class ScraperService {
     );
   }
 
-  /// DataNodes (XFileSharing): POST op=download2 and read the JSON `url`.
-  /// The host changes this flow regularly, so the known variants are tried
-  /// in turn with the cookies from the file page.
+  static bool _dataNodesRemoved(String body) => RegExp(
+    r'file not found|file was removed|no such file|file has been deleted',
+    caseSensitive: false,
+  ).hasMatch(body);
+
+  /// DataNodes over plain HTTP: the same two steps as [_dataNodesJs]. Only
+  /// works while step 2 has no captcha; otherwise the browser takes over.
   Future<String?> _getDataNodesLink(String url) async {
     final fileUri = Uri.parse(url.trim());
     final segments = fileUri.pathSegments.where((s) => s.isNotEmpty).toList();
@@ -820,92 +906,76 @@ class ScraperService {
     }
     final code = segments.first;
     final fileName = segments.length > 1 ? segments.last : '';
-    const host = 'datanodes.to';
+    const download = 'https://datanodes.to/download';
+    const removed = MirrorException(
+      'File was removed from DataNodes',
+      permanent: true,
+    );
+    final headers = {'Origin': 'https://datanodes.to', 'Referer': download};
 
-    _web.setCookie(host, 'lang', 'english');
-    _web.setCookie(host, 'file_code', code);
-    if (fileName.isNotEmpty) _web.setCookie(host, 'file_name', fileName);
-
-    // Visit the file page first: it sets the session cookies.
+    // The file page sets the session cookies.
     final page = await _web.get(fileUri);
-    if (page.statusCode == 404 ||
-        page.body.contains('File Not Found') ||
-        page.body.contains('file was removed')) {
-      throw const MirrorException(
-        'File was removed from DataNodes',
-        permanent: true,
+    if (page.statusCode == 404 || _dataNodesRemoved(page.body)) throw removed;
+
+    final step1 = await _web.post(
+      Uri.parse(download),
+      headers: headers,
+      fields: {
+        'op': 'download1',
+        'usr_login': '',
+        'id': code,
+        'fname': fileName,
+        'referer': '',
+        'method_free': 'Free Download >>',
+      },
+    );
+    final startedAt = DateTime.now();
+    if (step1.statusCode == 404 || _dataNodesRemoved(step1.body)) {
+      throw removed;
+    }
+    final step2 = parser.parse(step1.body).querySelector('download-countdown');
+    if (step2 == null) {
+      throw MirrorException(
+        'DataNodes changed its download page (HTTP ${step1.statusCode})',
       );
     }
-
-    const download = 'https://datanodes.to/download';
-    final attempts = <Future<http.Response> Function()>[
-      // Current (2026): POST to the file's own URL.
-      () => _web.post(
-        fileUri,
-        fields: {
-          'op': 'download2',
-          'id': code,
-          'rand': '',
-          'referer': '',
-          'method_free': 'Free Download >>',
-          'method_premium': '',
-          'g_captch__a': '1',
-        },
-      ),
-      // Variant sent by the site's own front-end (multipart to /download).
-      () => _web.post(
-        Uri.parse(download),
-        multipart: true,
-        headers: {
-          'Accept': '*/*',
-          'Origin': 'https://datanodes.to',
-          'Referer': download,
-          'Sec-Fetch-Dest': 'empty',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Site': 'same-origin',
-        },
-        fields: {
-          'op': 'download2',
-          'id': code,
-          'rand': '',
-          'referer': download,
-          'method_free': 'Free Download >>',
-          'method_premium': '',
-          '__dl': '1',
-          'g_captch__a': '1',
-        },
-      ),
-      // Legacy form.
-      () => _web.post(
-        Uri.parse(download),
-        headers: {'Origin': 'https://datanodes.to', 'Referer': download},
-        fields: {
-          'op': 'download2',
-          'id': code,
-          'rand': '',
-          'referer': download,
-          'method_free': 'Free Download >>',
-          'method_premium': '',
-          'dl': '1',
-        },
-      ),
-    ];
-
-    int? lastStatus;
-    for (final attempt in attempts) {
-      try {
-        final res = await attempt();
-        lastStatus = res.statusCode;
-        final link = _dataNodesLinkFrom(res);
-        if (link != null) return link;
-      } catch (e) {
-        debugPrint('DataNodes attempt failed: $e');
-      }
+    String attr(String name, [String fallback = '']) =>
+        step2.attributes[name] ?? fallback;
+    if (attr(':has-captcha') == 'true') {
+      throw const MirrorException('DataNodes asks for a browser check');
     }
+    final wait = int.tryParse(attr(':countdown')) ?? 0;
+    final left = startedAt
+        .add(Duration(seconds: wait + 1))
+        .difference(DateTime.now());
+    if (wait > 0 && !left.isNegative) await Future<void>.delayed(left);
+
+    final res = await _web.post(
+      Uri.parse(download),
+      multipart: true,
+      headers: {...headers, 'X-Dn-Dl': '1'},
+      fields: {
+        'op': 'download2',
+        'id': attr('code', code),
+        'rand': attr('rand'),
+        'referer': attr('referer'),
+        'method_free': attr('free-method', 'Free Download >>'),
+        'method_premium': attr('premium-method'),
+        'g_captch__a': '1',
+        if (attr('dl-token').isNotEmpty) 'dl_token': attr('dl-token'),
+      },
+    );
+    final link = _dataNodesLinkFrom(res);
+    if (link != null) return link;
+    String? error;
+    try {
+      final data = jsonDecode(res.body);
+      if (data is Map && data['error'] is String) error = data['error'];
+    } catch (_) {}
     throw MirrorException(
-      'DataNodes refused the request'
-      '${lastStatus != null ? ' (HTTP $lastStatus)' : ''}; '
-      'it may require browser verification',
+      error != null
+          ? 'DataNodes: $error'
+          : 'DataNodes did not return a download link (HTTP ${res.statusCode})',
     );
   }
 
@@ -925,7 +995,7 @@ class ScraperService {
         !Uri.parse(location).host.endsWith('datanodes.to')) {
       return location;
     }
-    return _extractWindowOpenUrl(res.body);
+    return null;
   }
 
   /// Extracts FuckingFast/DataNodes links from a Pastebin page (e.g., pastefg.hermietkreeft.site)

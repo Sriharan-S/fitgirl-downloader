@@ -54,7 +54,8 @@ class BrowserResolver {
 
   /// Loads [pageUrl], waits until [readyJs] evaluates to true (Cloudflare
   /// check passed), then runs [extractJs], which must call
-  /// `FGBridge.postMessage(JSON.stringify({url}|{error}))`.
+  /// `FGBridge.postMessage(JSON.stringify({url}|{error}))`; `{show: bool}`
+  /// shows or hides the page while it waits for the user (e.g. a captcha).
   /// Navigations to a host in [captureHosts] are intercepted and returned as
   /// the link (for sites that redirect to the file instead of answering).
   Future<ResolvedLink> resolve({
@@ -63,6 +64,7 @@ class BrowserResolver {
     required String extractJs,
     Set<String> captureHosts = const {},
     Duration readyTimeout = const Duration(seconds: 15),
+    Duration extractTimeout = const Duration(seconds: 45),
     Duration totalTimeout = const Duration(minutes: 3),
   }) {
     // One page at a time: hosts rate-limit and the user can only answer
@@ -75,6 +77,7 @@ class BrowserResolver {
             extractJs: extractJs,
             captureHosts: captureHosts,
             readyTimeout: readyTimeout,
+            extractTimeout: extractTimeout,
           ).timeout(
             totalTimeout,
             onTimeout: () => throw const BrowserException(
@@ -92,6 +95,7 @@ class BrowserResolver {
     required String extractJs,
     required Set<String> captureHosts,
     required Duration readyTimeout,
+    required Duration extractTimeout,
   }) async {
     if (!isSupported) {
       throw const BrowserException('Browser check is not supported here');
@@ -109,6 +113,13 @@ class BrowserResolver {
     await controller.addJavaScriptChannel(
       'FGBridge',
       onMessageReceived: (m) {
+        try {
+          final show = (jsonDecode(m.message) as Map)['show'];
+          if (show is bool) {
+            current.visible.value = show;
+            return;
+          }
+        } catch (_) {}
         if (!result.isCompleted) result.complete(m.message);
       },
     );
@@ -157,7 +168,7 @@ class BrowserResolver {
       final message =
           jsonDecode(
                 await result.future.timeout(
-                  const Duration(seconds: 45),
+                  extractTimeout,
                   onTimeout: () => throw const BrowserException(
                     'The file host did not return a link',
                   ),

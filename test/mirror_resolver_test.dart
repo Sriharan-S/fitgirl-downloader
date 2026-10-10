@@ -44,37 +44,56 @@ void main() {
   });
 
   group('DataNodes', () {
-    test('posts download2 to the file URL and decodes the JSON url', () async {
-      final posts = <http.Request>[];
-      ScraperService().client = WebClient(
-        inner: MockClient((req) async {
-          if (req.method == 'GET') return http.Response('<html></html>', 200);
-          posts.add(req);
-          return http.Response(
-            jsonEncode({'url': 'https%3A%2F%2Fcdn.example%2Ff%2FGame.rar'}),
-            200,
-          );
-        }),
-      );
-      final link = await ScraperService().getDirectDownloadLink(
-        'https://datanodes.to/6jimwv4wv1lc/Game.rar',
-      );
-      expect(link?.url, 'https://cdn.example/f/Game.rar');
-      expect(posts.single.url.path, '/6jimwv4wv1lc/Game.rar');
-      expect(posts.single.bodyFields['op'], 'download2');
-      expect(posts.single.bodyFields['g_captch__a'], '1');
-      expect(posts.single.headers['Cookie'], contains('lang=english'));
-    });
+    String step2({bool captcha = false}) =>
+        '<html><body><download-countdown :countdown="0" '
+        'code="6jimwv4wv1lc" referer="https://datanodes.to/download" '
+        'rand="r123" free-method="Free Download &gt;&gt;" premium-method="" '
+        ':has-captcha="$captcha" dl-token="1791640778.0.abc">'
+        '</download-countdown></body></html>';
 
-    test('a redirect back to the site is a refusal, not a link', () async {
+    test(
+      'download1, then download2 with the step-2 token; decodes the url',
+      () async {
+        final posts = <http.Request>[];
+        ScraperService().client = WebClient(
+          inner: MockClient((req) async {
+            if (req.method == 'GET') return http.Response('<html></html>', 200);
+            posts.add(req);
+            if (req.body.contains('download1')) {
+              return http.Response(step2(), 200);
+            }
+            return http.Response(
+              jsonEncode({'url': 'https%3A%2F%2Fcdn.example%2Ff%2FGame.rar'}),
+              200,
+            );
+          }),
+        );
+        final link = await ScraperService().getDirectDownloadLink(
+          'https://datanodes.to/6jimwv4wv1lc/Game.rar',
+        );
+        expect(link?.url, 'https://cdn.example/f/Game.rar');
+        expect(posts, hasLength(2));
+        expect(posts[0].bodyFields['op'], 'download1');
+        expect(posts[0].bodyFields['fname'], 'Game.rar');
+        final second = posts[1];
+        expect(second.url.toString(), 'https://datanodes.to/download');
+        expect(second.headers['X-Dn-Dl'], '1');
+        for (final part in [
+          'download2',
+          'r123',
+          '1791640778.0.abc',
+          'Free Download >>',
+        ]) {
+          expect(second.body, contains(part));
+        }
+      },
+    );
+
+    test('a captcha on step 2 hands over to the browser', () async {
       ScraperService().client = WebClient(
         inner: MockClient((req) async {
           if (req.method == 'GET') return http.Response('<html></html>', 200);
-          return http.Response(
-            '',
-            302,
-            headers: {'location': 'https://datanodes.to/download'},
-          );
+          return http.Response(step2(captcha: true), 200);
         }),
       );
       await expectLater(
@@ -82,9 +101,35 @@ void main() {
           'https://datanodes.to/6jimwv4wv1lc/Game.rar',
         ),
         throwsA(
-          isA<MirrorException>().having((e) => e.permanent, 'permanent', false),
+          isA<MirrorException>()
+              .having((e) => e.permanent, 'permanent', false)
+              .having((e) => e.message, 'message', contains('browser check')),
         ),
       );
+    });
+
+    test('a missing file is a permanent failure', () async {
+      ScraperService().client = WebClient(
+        inner: MockClient((_) async => http.Response('File Not Found', 404)),
+      );
+      await expectLater(
+        ScraperService().getDirectDownloadLink(
+          'https://datanodes.to/zzzz/Nope.rar',
+        ),
+        throwsA(
+          isA<MirrorException>().having((e) => e.permanent, 'permanent', true),
+        ),
+      );
+    });
+
+    test('the browser script fills in the file code and name', () {
+      final js = ScraperService.dataNodesExtractJsForTest(
+        'https://datanodes.to/6jimwv4wv1lc/Game.part1.rar',
+      );
+      expect(js, contains('id: "6jimwv4wv1lc"'));
+      expect(js, contains('fname: "Game.part1.rar"'));
+      expect(js, isNot(contains('__CODE__')));
+      expect(js, contains("'X-Dn-Dl': '1'"));
     });
   });
 
