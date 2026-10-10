@@ -39,6 +39,14 @@ signingConfigs {
         }
     }
 
+    // The torrent engine (libtorrentd.so) is an executable: it must be
+    // extracted to disk at install time so it can be started.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")

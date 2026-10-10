@@ -123,6 +123,36 @@ class DownloadFile {
   }
 }
 
+/// Snapshot of a torrent's swarm, refreshed from the engine.
+class TorrentInfo {
+  final String infoHash;
+  final String
+  state; // metadata | waiting | downloading | paused | seeding | completed
+  final int peers;
+  final int seeders;
+  final double downloadRate; // MB/s
+  final double uploadRate; // MB/s
+
+  const TorrentInfo({
+    required this.infoHash,
+    this.state = 'downloading',
+    this.peers = 0,
+    this.seeders = 0,
+    this.downloadRate = 0,
+    this.uploadRate = 0,
+  });
+
+  /// Pseudo URL identifying file [index] of a torrent; the fragment carries
+  /// the path so names display and categorise like mirror links.
+  static String fileUrl(String infoHash, int index, String path) =>
+      'torrent:$infoHash/$index#$path';
+
+  static int? fileIndex(String url) {
+    final m = RegExp(r'^torrent:[0-9a-f]+/(\d+)').firstMatch(url);
+    return m == null ? null : int.parse(m.group(1)!);
+  }
+}
+
 class DownloadSession {
   final String gameTitle; // Unique key
   final String coverUrl;
@@ -134,9 +164,14 @@ class DownloadSession {
   final DateTime createdAt;
   final DateTime? completedAt;
 
+  /// Set for downloads handled by the torrent engine.
+  final TorrentInfo? torrent;
+
   // Transient stats
   final double avgSpeed; // MB/s
   final double peakSpeed; // MB/s
+
+  bool get isTorrent => torrent != null;
 
   const DownloadSession({
     required this.gameTitle,
@@ -150,6 +185,7 @@ class DownloadSession {
     this.completedAt,
     this.avgSpeed = 0.0,
     this.peakSpeed = 0.0,
+    this.torrent,
   });
 
   factory DownloadSession.create({
@@ -183,6 +219,7 @@ class DownloadSession {
     bool clearCompletedAt = false,
     double? avgSpeed,
     double? peakSpeed,
+    TorrentInfo? torrent,
   }) {
     return DownloadSession(
       gameTitle: gameTitle,
@@ -196,6 +233,7 @@ class DownloadSession {
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
       avgSpeed: avgSpeed ?? this.avgSpeed,
       peakSpeed: peakSpeed ?? this.peakSpeed,
+      torrent: torrent ?? this.torrent,
     );
   }
 
@@ -232,9 +270,11 @@ class DownloadSession {
     return SessionStatus.queued;
   }
 
-  double get networkSpeed => files
-      .where((f) => f.status == FileStatus.downloading)
-      .fold(0.0, (sum, f) => sum + f.speed);
+  double get networkSpeed => isTorrent
+      ? (status == SessionStatus.downloading ? torrent!.downloadRate : 0)
+      : files
+            .where((f) => f.status == FileStatus.downloading)
+            .fold(0.0, (sum, f) => sum + f.speed);
 
   /// Byte-accurate progress when sizes are known, file-count based otherwise.
   double get overallProgress {
@@ -293,6 +333,7 @@ class DownloadSession {
     'completedAt': completedAt?.toIso8601String(),
     'avgSpeed': avgSpeed,
     'peakSpeed': peakSpeed,
+    if (torrent != null) 'torrentInfoHash': torrent!.infoHash,
   };
 
   factory DownloadSession.fromJson(Map<String, dynamic> json) {
@@ -344,6 +385,12 @@ class DownloadSession {
       completedAt: DateTime.tryParse(json['completedAt'] as String? ?? ''),
       avgSpeed: (json['avgSpeed'] as num?)?.toDouble() ?? 0.0,
       peakSpeed: (json['peakSpeed'] as num?)?.toDouble() ?? 0.0,
+      torrent: json['torrentInfoHash'] is String
+          ? TorrentInfo(
+              infoHash: json['torrentInfoHash'] as String,
+              state: 'paused',
+            )
+          : null,
     );
   }
 }

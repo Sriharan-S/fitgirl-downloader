@@ -129,6 +129,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               _update((s) => s.copyWith(autoRetries: v)),
                         ),
                         SwitchListTile(
+                          secondary: const Icon(LucideIcons.upload),
+                          title: const Text('Seed torrents after download'),
+                          subtitle: const Text(
+                            'Keep sharing finished torrents with other people (uses upload bandwidth)',
+                            style: TextStyle(color: AppTheme.textMuted),
+                          ),
+                          value: settings.seedTorrents,
+                          onChanged: (v) =>
+                              _update((s) => s.copyWith(seedTorrents: v)),
+                        ),
+                        SwitchListTile(
                           secondary: const Icon(LucideIcons.listOrdered),
                           title: const Text('One game at a time'),
                           subtitle: const Text(

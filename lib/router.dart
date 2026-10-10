@@ -99,6 +99,7 @@ final router = GoRouter(
           initialSelection: (extra['initialSelection'] as List?)
               ?.cast<String>(),
           completedFiles: (extra['completedFiles'] as List?)?.cast<String>(),
+          fileSizes: (extra['fileSizes'] as Map?)?.cast<String, int>(),
         );
       },
     ),

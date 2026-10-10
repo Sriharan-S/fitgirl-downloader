@@ -17,12 +17,16 @@ class AppSettings {
   /// Download only one game at a time (files of the next game wait).
   final bool oneGameAtATime;
 
+  /// Keep uploading torrents after they finish.
+  final bool seedTorrents;
+
   const AppSettings({
     this.downloadPath,
     this.maxConcurrent = 2,
     this.autoRetries = 3,
     this.notificationsEnabled = true,
     this.oneGameAtATime = false,
+    this.seedTorrents = false,
   });
 
   AppSettings copyWith({
@@ -31,6 +35,7 @@ class AppSettings {
     int? autoRetries,
     bool? notificationsEnabled,
     bool? oneGameAtATime,
+    bool? seedTorrents,
   }) {
     return AppSettings(
       downloadPath: downloadPath ?? this.downloadPath,
@@ -38,6 +43,7 @@ class AppSettings {
       autoRetries: autoRetries ?? this.autoRetries,
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       oneGameAtATime: oneGameAtATime ?? this.oneGameAtATime,
+      seedTorrents: seedTorrents ?? this.seedTorrents,
     );
   }
 }
@@ -52,6 +58,7 @@ class SettingsService {
   static const _kRetries = 'auto_retries';
   static const _kNotifications = 'notifications_enabled';
   static const _kOneGame = 'one_game_at_a_time';
+  static const _kSeed = 'seed_torrents';
 
   final ValueNotifier<AppSettings> notifier = ValueNotifier(
     const AppSettings(),
@@ -67,6 +74,7 @@ class SettingsService {
       autoRetries: prefs.getInt(_kRetries) ?? 3,
       notificationsEnabled: prefs.getBool(_kNotifications) ?? true,
       oneGameAtATime: prefs.getBool(_kOneGame) ?? false,
+      seedTorrents: prefs.getBool(_kSeed) ?? false,
     );
   }
 
@@ -80,5 +88,6 @@ class SettingsService {
     await prefs.setInt(_kRetries, settings.autoRetries);
     await prefs.setBool(_kNotifications, settings.notificationsEnabled);
     await prefs.setBool(_kOneGame, settings.oneGameAtATime);
+    await prefs.setBool(_kSeed, settings.seedTorrents);
   }
 }

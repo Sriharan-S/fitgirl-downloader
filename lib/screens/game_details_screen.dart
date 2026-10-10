@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -12,6 +13,8 @@ import 'package:fitgirl_mobile_flutter/router.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
 import 'package:fitgirl_mobile_flutter/services/favorites_service.dart';
 import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
+import 'package:fitgirl_mobile_flutter/services/torrent_engine.dart';
+import 'package:fitgirl_mobile_flutter/widgets/torrent_metadata_dialog.dart';
 import 'package:fitgirl_mobile_flutter/widgets/download_option_tile.dart';
 import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
 import 'package:fitgirl_mobile_flutter/widgets/game_details_skeleton.dart';
@@ -41,10 +44,16 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
 
   String? get _url => widget.gameId ?? widget.initialGame?.url;
 
+  /// Whether the bundled torrent engine is available on this device.
+  bool _torrentInApp = false;
+
   @override
   void initState() {
     super.initState();
     _load();
+    TorrentEngine().isAvailable.then((ok) {
+      if (mounted) setState(() => _torrentInApp = ok);
+    });
   }
 
   Future<void> _load() async {
@@ -157,6 +166,109 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _openMagnetExternally(String magnet) async {
+    final ok = await launchUrl(Uri.parse(magnet));
+    if (!ok) _copyMagnet(magnet);
+  }
+
+  /// Adds the torrent to the in-app engine, waits for its file list, lets
+  /// the user pick files and starts the download.
+  Future<void> _downloadTorrent({String? magnet, String? torrentUrl}) async {
+    final game = _game!;
+    final service = DownloadService();
+    final existing = ref.read(downloadSessionProvider(game.title));
+    if (existing != null && !existing.isTorrent) {
+      _snack('This game is already downloading from direct links');
+      return;
+    }
+    if (service.needsDownloadDirectory &&
+        !await service.setDownloadDirectory()) {
+      _snack('Download cancelled: no folder selected');
+      return;
+    }
+    if (!await service.requestStoragePermission()) {
+      _snack('Storage permission is required to save downloads');
+      return;
+    }
+
+    String infoHash;
+    try {
+      final saveDir = await service.gameDirectory(game.title);
+      infoHash = await _withProgress(
+        'Starting torrent…',
+        () => TorrentEngine().add(
+          magnet: magnet,
+          torrentUrl: torrentUrl,
+          saveDir: saveDir,
+        ),
+      );
+    } catch (e) {
+      _snack('Could not start the torrent: $e');
+      return;
+    }
+    if (!mounted) return;
+
+    final status = await showDialog<TorrentStatus>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => TorrentMetadataDialog(infoHash: infoHash),
+    );
+    if (status == null || !mounted) {
+      if (existing == null) {
+        unawaited(TorrentEngine().remove(infoHash).catchError((Object _) {}));
+      }
+      return;
+    }
+
+    final urls = [
+      for (final f in status.files)
+        TorrentInfo.fileUrl(status.infoHash, f.index, f.path),
+    ];
+    final selected = await context.push<List<String>>(
+      '/select-files',
+      extra: {
+        'game': game,
+        'fileUrls': urls,
+        'fileSizes': {
+          for (final f in status.files)
+            TorrentInfo.fileUrl(status.infoHash, f.index, f.path): f.length,
+        },
+        if (existing != null) ...{
+          'initialSelection': existing.selectedUrls,
+          'completedFiles': existing.completedUrls,
+        },
+      },
+    );
+    if (selected == null || selected.isEmpty || !mounted) {
+      if (existing == null) {
+        unawaited(TorrentEngine().remove(infoHash).catchError((Object _) {}));
+      }
+      return;
+    }
+
+    try {
+      final result = await service.queueTorrent(
+        gameTitle: game.title,
+        coverUrl: game.coverUrl,
+        gameUrl: game.url,
+        totalGameSize: game.repackSize ?? game.size,
+        status: status,
+        selected: selected.map(TorrentInfo.fileIndex).whereType<int>().toList(),
+      );
+      _snack(
+        result == QueueResult.merged
+            ? 'Torrent selection updated'
+            : 'Torrent download started (${selected.length} files)',
+        action: SnackBarAction(
+          label: 'VIEW',
+          onPressed: () => openDownloadDetails(context, game.title),
+        ),
+      );
+    } catch (e) {
+      _snack('$e');
+    }
   }
 
   /// Shows a modal spinner while [work] runs.
@@ -639,23 +751,37 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
               padding: const EdgeInsets.only(bottom: 8),
               child: DownloadOptionTile(
                 title: 'Magnet link',
-                subtitle: 'Open in your torrent client',
+                subtitle: _torrentInApp
+                    ? 'Download in the app • pick files'
+                    : 'Open in your torrent client',
                 icon: LucideIcons.magnet,
                 isRecommended: true,
-                trailerIcon: LucideIcons.externalLink,
-                onTap: () async {
-                  final ok = await launchUrl(Uri.parse(game.magnetLink!));
-                  if (!ok) _copyMagnet(game.magnetLink!);
-                },
+                trailerIcon: _torrentInApp
+                    ? LucideIcons.download
+                    : LucideIcons.externalLink,
+                onTap: () => _torrentInApp
+                    ? _downloadTorrent(magnet: game.magnetLink)
+                    : _openMagnetExternally(game.magnetLink!),
               ),
             ),
           if (game.magnetLink != null)
             Align(
               alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                onPressed: () => _copyMagnet(game.magnetLink!),
-                icon: const Icon(LucideIcons.copy, size: 14),
-                label: const Text('Copy magnet'),
+              child: Wrap(
+                spacing: 4,
+                children: [
+                  if (_torrentInApp)
+                    TextButton.icon(
+                      onPressed: () => _openMagnetExternally(game.magnetLink!),
+                      icon: const Icon(LucideIcons.externalLink, size: 14),
+                      label: const Text('Open in torrent client'),
+                    ),
+                  TextButton.icon(
+                    onPressed: () => _copyMagnet(game.magnetLink!),
+                    icon: const Icon(LucideIcons.copy, size: 14),
+                    label: const Text('Copy magnet'),
+                  ),
+                ],
               ),
             ),
           if (game.torrentUrl != null)
@@ -663,10 +789,16 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
               padding: const EdgeInsets.only(bottom: 8),
               child: DownloadOptionTile(
                 title: '.torrent file',
-                subtitle: 'Download via browser',
+                subtitle: _torrentInApp
+                    ? 'Download in the app • pick files'
+                    : 'Download via browser',
                 icon: LucideIcons.fileDown,
-                trailerIcon: LucideIcons.externalLink,
-                onTap: () => _launch(game.torrentUrl!),
+                trailerIcon: _torrentInApp
+                    ? LucideIcons.download
+                    : LucideIcons.externalLink,
+                onTap: () => _torrentInApp
+                    ? _downloadTorrent(torrentUrl: game.torrentUrl)
+                    : _launch(game.torrentUrl!),
               ),
             ),
           for (final e in torrentSites.entries)

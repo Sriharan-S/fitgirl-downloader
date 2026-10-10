@@ -10,6 +10,7 @@ import 'package:fitgirl_mobile_flutter/models/download_session.dart';
 import 'package:fitgirl_mobile_flutter/services/notification_service.dart';
 import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
 import 'package:fitgirl_mobile_flutter/services/settings_service.dart';
+import 'package:fitgirl_mobile_flutter/services/torrent_engine.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -113,6 +114,8 @@ class DownloadService {
     await FileDownloader().start(doRescheduleKilledTasks: false);
 
     SettingsService().notifier.addListener(_pump);
+    SettingsService().notifier.addListener(_syncTorrentSettings);
+    if (_sessions.any((s) => s.isTorrent)) unawaited(_startTorrentEngine());
     _pump();
   }
 
@@ -165,6 +168,7 @@ class DownloadService {
     final i = _indexOf(gameTitle);
     if (i == -1) return;
     final session = _sessions[i];
+    if (session.isTorrent) return _updateTorrentSelection(session, urls);
     final wanted = urls.toSet();
 
     final kept = <DownloadFile>[];
@@ -214,6 +218,13 @@ class DownloadService {
   Future<void> pauseSession(String gameTitle) async {
     final i = _indexOf(gameTitle);
     if (i == -1 || _sessions[i].isPaused) return;
+    if (_sessions[i].isTorrent) {
+      final hash = _sessions[i].torrent!.infoHash;
+      _sessions[i] = _sessions[i].copyWith(isPaused: true);
+      _changed(saveNow: true);
+      await TorrentEngine().pause(hash);
+      return _pollTorrents();
+    }
     _sessions[i] = _sessions[i].copyWith(isPaused: true);
     _changed();
     for (final f in _sessions[i].files.where((f) => f.status.isActive)) {
@@ -227,6 +238,13 @@ class DownloadService {
     final i = _indexOf(gameTitle);
     if (i == -1) return;
     final s = _sessions[i];
+    if (s.isTorrent) {
+      _sessions[i] = s.copyWith(isPaused: false);
+      _changed(saveNow: true);
+      await _startTorrentEngine();
+      await TorrentEngine().resume(s.torrent!.infoHash);
+      return _pollTorrents();
+    }
     _sessions[i] = s.copyWith(
       isPaused: false,
       files: [
@@ -284,6 +302,17 @@ class DownloadService {
     final session = _sessions.removeAt(i);
     _changed(saveNow: true);
 
+    if (session.isTorrent) {
+      try {
+        await TorrentEngine().remove(
+          session.torrent!.infoHash,
+          deleteFiles: deleteFiles,
+        );
+      } catch (e) {
+        debugPrint('DownloadService: removing torrent failed: $e');
+      }
+      return;
+    }
     for (final f in session.files) {
       await _cancelTask(f.taskId);
     }
@@ -367,6 +396,12 @@ class DownloadService {
   Future<void> removeFile(String gameTitle, String url) async {
     final i = _indexOf(gameTitle);
     if (i == -1) return;
+    if (_sessions[i].isTorrent) {
+      return _updateTorrentSelection(_sessions[i], [
+        for (final u in _sessions[i].selectedUrls)
+          if (u != url) u,
+      ]);
+    }
     final file = _sessions[i].files.firstWhere(
       (f) => f.url == url,
       orElse: () => DownloadFile.fromUrl(url),
@@ -470,12 +505,15 @@ class DownloadService {
         _pumpAgain = false;
         int slots =
             _settings.maxConcurrent -
-            _sessions.fold<int>(0, (n, s) => n + s.activeCount);
+            _sessions
+                .where((s) => !s.isTorrent)
+                .fold<int>(0, (n, s) => n + s.activeCount);
         if (slots <= 0) break;
 
         for (final session in [..._sessions]) {
           if (slots <= 0) break;
           if (session.isPaused || session.isCompleted) continue;
+          if (session.isTorrent) continue; // Run by the torrent engine
           final waiting = session.files
               .where((f) => f.status == FileStatus.queued)
               .toList();
@@ -1085,6 +1123,7 @@ class DownloadService {
     final db = FileDownloader().database;
     for (var i = 0; i < _sessions.length; i++) {
       final s = _sessions[i];
+      if (s.isTorrent) continue; // Restored by the torrent engine
       final files = <DownloadFile>[];
       for (final f in s.files) {
         if (f.status == FileStatus.completed || f.status == FileStatus.failed) {
@@ -1141,6 +1180,227 @@ class DownloadService {
       }
     }
     _changed(saveNow: true);
+  }
+
+  // ===========================================================================
+  // Torrents (run by the bundled engine, mirrored into sessions)
+  // ===========================================================================
+
+  Timer? _torrentTimer;
+  bool _torrentPolling = false;
+
+  /// Starts a torrent download for a game. [status] must have metadata
+  /// (the file list); [selected] are file indexes to download.
+  Future<QueueResult> queueTorrent({
+    required String gameTitle,
+    required String coverUrl,
+    required String totalGameSize,
+    required TorrentStatus status,
+    required List<int> selected,
+    String? gameUrl,
+  }) async {
+    final existing = _indexOf(gameTitle);
+    if (existing != -1) {
+      final s = _sessions[existing];
+      if (s.torrent?.infoHash != status.infoHash) {
+        throw StateError(
+          s.isTorrent
+              ? 'This game is already downloading from another torrent'
+              : 'This game is already downloading from direct links',
+        );
+      }
+      await _updateTorrentSelection(s, [
+        for (final f in status.files)
+          if (selected.contains(f.index))
+            TorrentInfo.fileUrl(status.infoHash, f.index, f.path),
+      ]);
+      return QueueResult.merged;
+    }
+
+    await TorrentEngine().selectFiles(status.infoHash, selected);
+    await TorrentEngine().resume(status.infoHash);
+    _sessions.add(
+      DownloadSession(
+        gameTitle: gameTitle,
+        coverUrl: coverUrl,
+        gameUrl: gameUrl,
+        totalGameSize: totalGameSize,
+        createdAt: DateTime.now(),
+        originalUrls: [
+          for (final f in status.files)
+            TorrentInfo.fileUrl(status.infoHash, f.index, f.path),
+        ],
+        files: _torrentFiles(status, selected.toSet(), 'downloading'),
+        torrent: TorrentInfo(infoHash: status.infoHash),
+      ),
+    );
+    _changed(saveNow: true);
+    await _startTorrentEngine();
+    return QueueResult.added;
+  }
+
+  Future<void> _updateTorrentSelection(
+    DownloadSession session,
+    List<String> urls,
+  ) async {
+    final completed = {
+      for (final f in session.files)
+        if (f.status == FileStatus.completed) TorrentInfo.fileIndex(f.url),
+    };
+    final indexes = {
+      ...completed,
+      for (final u in urls) TorrentInfo.fileIndex(u),
+    }.whereType<int>().toList()..sort();
+    await _startTorrentEngine();
+    await TorrentEngine().selectFiles(session.torrent!.infoHash, indexes);
+    final i = _indexOf(session.gameTitle);
+    if (i != -1) {
+      _sessions[i] = _sessions[i].copyWith(clearCompletedAt: true);
+    }
+    await _pollTorrents();
+  }
+
+  Future<void> _startTorrentEngine() async {
+    try {
+      await TorrentEngine().ensureStarted();
+      await TorrentEngine().setSeeding(_settings.seedTorrents);
+    } catch (e) {
+      debugPrint('DownloadService: torrent engine unavailable: $e');
+      _markTorrentsFailed(e.toString());
+      return;
+    }
+    _torrentTimer ??= Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _pollTorrents(),
+    );
+  }
+
+  void _syncTorrentSettings() {
+    if (TorrentEngine().isRunning) {
+      unawaited(
+        TorrentEngine()
+            .setSeeding(_settings.seedTorrents)
+            .catchError((Object _) {}),
+      );
+    }
+  }
+
+  void _markTorrentsFailed(String error) {
+    for (var i = 0; i < _sessions.length; i++) {
+      final s = _sessions[i];
+      if (!s.isTorrent || s.isCompleted) continue;
+      _sessions[i] = s.copyWith(
+        files: [
+          for (final f in s.files)
+            f.status == FileStatus.completed
+                ? f
+                : f.copyWith(status: FileStatus.failed, error: error, speed: 0),
+        ],
+      );
+    }
+    _changed(saveNow: true);
+  }
+
+  static List<DownloadFile> _torrentFiles(
+    TorrentStatus status,
+    Set<int> selected,
+    String state,
+  ) {
+    return [
+      for (final f in status.files)
+        if (selected.contains(f.index))
+          DownloadFile(
+            url: TorrentInfo.fileUrl(status.infoHash, f.index, f.path),
+            name: f.path.split('/').last,
+            expectedSize: f.length,
+            progress: f.length > 0 ? f.bytesCompleted / f.length : 1,
+            status: f.length > 0 && f.bytesCompleted >= f.length
+                ? FileStatus.completed
+                : switch (state) {
+                    'paused' => FileStatus.paused,
+                    'downloading' => FileStatus.downloading,
+                    _ => FileStatus.queued,
+                  },
+          ),
+    ];
+  }
+
+  /// Copies the engine's progress into the torrent sessions.
+  Future<void> _pollTorrents() async {
+    if (_torrentPolling) return;
+    if (!_sessions.any((s) => s.isTorrent)) {
+      _torrentTimer?.cancel();
+      _torrentTimer = null;
+      return;
+    }
+    _torrentPolling = true;
+    try {
+      final list = await TorrentEngine().list(withFiles: true);
+      final byHash = {for (final t in list) t.infoHash: t};
+      for (var i = 0; i < _sessions.length; i++) {
+        final s = _sessions[i];
+        if (!s.isTorrent) continue;
+        final st = byHash[s.torrent!.infoHash];
+        if (st == null) {
+          if (!s.isCompleted) {
+            _sessions[i] = s.copyWith(
+              files: [
+                for (final f in s.files)
+                  f.status == FileStatus.completed
+                      ? f
+                      : f.copyWith(
+                          status: FileStatus.failed,
+                          error: 'Torrent is missing from the engine',
+                        ),
+              ],
+            );
+          }
+          continue;
+        }
+        final info = TorrentInfo(
+          infoHash: st.infoHash,
+          state: st.state,
+          peers: st.peers,
+          seeders: st.seeders,
+          downloadRate: st.downloadRate / (1024 * 1024),
+          uploadRate: st.uploadRate / (1024 * 1024),
+        );
+        if (!st.hasMetadata) {
+          _sessions[i] = s.copyWith(torrent: info);
+          continue;
+        }
+        final selected = {
+          for (final f in st.files)
+            if (f.selected) f.index,
+        };
+        // Spread the torrent's rate over its active files so per-file and
+        // session speeds add up.
+        var files = _torrentFiles(st, selected, st.state);
+        final active = files
+            .where((f) => f.status == FileStatus.downloading)
+            .length;
+        if (active > 0) {
+          files = [
+            for (final f in files)
+              f.status == FileStatus.downloading
+                  ? f.copyWith(speed: info.downloadRate / active)
+                  : f,
+          ];
+        }
+        _sessions[i] = s.copyWith(
+          files: files,
+          torrent: info,
+          isPaused: st.state == 'paused',
+        );
+        _checkSessionCompleted(s.gameTitle);
+      }
+      _changed(throttled: true);
+      _ensureStatsTimer();
+    } catch (e) {
+      debugPrint('DownloadService: torrent poll failed: $e');
+    } finally {
+      _torrentPolling = false;
+    }
   }
 
   // Same folder naming as v1 so existing partial downloads are found again.

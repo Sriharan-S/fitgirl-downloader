@@ -83,3 +83,6 @@ web/favicon.png
 !/ios/Runner/Info.plist
 !/web/index.html
 
+
+# Torrent engine binary, built by CI (native/torrentd)
+android/app/src/main/jniLibs/

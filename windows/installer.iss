@@ -40,6 +40,8 @@ Source: "..\build\windows\x64\runner\release\{#MyAppExeName}"; DestDir: "{app}";
 ; FIX: Copy ALL .dll files (includes flutter_windows.dll AND plugin DLLs)
 Source: "..\build\windows\x64\runner\release\*.dll"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "..\build\windows\x64\runner\release\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Torrent engine (built by CI next to the exe)
+Source: "..\build\windows\x64\runner\release\torrentd.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

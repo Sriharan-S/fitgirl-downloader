@@ -252,6 +252,27 @@ class SessionCard extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         StatusChip(status: status),
+                        if (s.isTorrent)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.purpleAccent.withValues(
+                                alpha: 0.15,
+                              ),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              'TORRENT • ${s.torrent!.peers} peers',
+                              style: const TextStyle(
+                                color: Colors.purpleAccent,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
                         Text(
                           '${s.completedCount}/${s.totalFiles} files',
                           style: const TextStyle(

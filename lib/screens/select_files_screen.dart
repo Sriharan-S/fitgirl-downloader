@@ -20,12 +20,16 @@ class SelectFilesScreen extends StatefulWidget {
   final List<String>? initialSelection;
   final List<String>? completedFiles;
 
+  /// Exact sizes when known (torrents); mirrors only give estimates.
+  final Map<String, int>? fileSizes;
+
   const SelectFilesScreen({
     super.key,
     required this.game,
     required this.fileUrls,
     this.initialSelection,
     this.completedFiles,
+    this.fileSizes,
   });
 
   @override
@@ -134,6 +138,10 @@ class _SelectFilesScreenState extends State<SelectFilesScreen> {
           .add(item);
     }
   }
+
+  int get _exactNewBytes => _allFiles
+      .where((f) => f.selected && !_completed.contains(f.url))
+      .fold(0, (sum, f) => sum + (widget.fileSizes?[f.url] ?? 0));
 
   int get _selectedCount => _allFiles.where((f) => f.selected).length;
 
@@ -441,6 +449,16 @@ class _SelectFilesScreenState extends State<SelectFilesScreen> {
                   ),
                 ),
               ),
+              if (widget.fileSizes?[file.url] != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  formatBytes(widget.fileSizes![file.url]!),
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
               const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -494,7 +512,9 @@ class _SelectFilesScreenState extends State<SelectFilesScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 Text(
-                  '≈ ${formatBytes(newCount * _bytesPerFile)} to download',
+                  widget.fileSizes != null
+                      ? '${formatBytes(_exactNewBytes)} to download'
+                      : '≈ ${formatBytes(newCount * _bytesPerFile)} to download',
                   style: const TextStyle(
                     color: AppTheme.textMuted,
                     fontSize: 12,

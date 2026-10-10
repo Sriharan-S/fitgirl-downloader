@@ -445,13 +445,28 @@ class _StatsGrid extends StatelessWidget {
         '${s.completedCount} / ${s.totalFiles}',
         null,
       ),
-      _Stat(LucideIcons.activity, 'ACTIVE', '${s.activeCount}', null),
-      _Stat(
-        LucideIcons.alertTriangle,
-        'FAILED',
-        '${s.failedCount}',
-        s.failedCount > 0 ? AppTheme.danger : null,
-      ),
+      if (s.isTorrent) ...[
+        _Stat(
+          LucideIcons.users,
+          'PEERS',
+          '${s.torrent!.peers} (${s.torrent!.seeders} seeds)',
+          null,
+        ),
+        _Stat(
+          LucideIcons.upload,
+          'UPLOAD',
+          formatSpeed(s.torrent!.uploadRate),
+          null,
+        ),
+      ] else ...[
+        _Stat(LucideIcons.activity, 'ACTIVE', '${s.activeCount}', null),
+        _Stat(
+          LucideIcons.alertTriangle,
+          'FAILED',
+          '${s.failedCount}',
+          s.failedCount > 0 ? AppTheme.danger : null,
+        ),
+      ],
     ];
     return LayoutBuilder(
       builder: (context, c) {
@@ -636,7 +651,11 @@ class _FileRow extends StatelessWidget {
           onPressed: onPressed,
         );
 
-    if (f.status == FileStatus.completed) return const [SizedBox(width: 8)];
+    // Torrent files are managed as a whole (pause the game, add/remove
+    // files); completed files have nothing left to do.
+    if (f.status == FileStatus.completed || session.isTorrent) {
+      return const [SizedBox(width: 8)];
+    }
 
     final primary = switch (f.status) {
       FileStatus.downloading || FileStatus.resolving => iconButton(
