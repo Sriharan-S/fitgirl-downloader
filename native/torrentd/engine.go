@@ -19,6 +19,7 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"golang.org/x/time/rate"
 )
 
 // Engine owns the BitTorrent client and the list of torrents the app added.
@@ -75,6 +76,16 @@ func NewEngine(dataDir string, listenPort int) (*Engine, error) {
 	cfg.Seed = true
 	cfg.Logger = cfg.Logger.WithFilterLevel(alog.Warning)
 	cfg.Slogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	// Library defaults are conservative (50 connections per torrent, 10 new
+	// connections per second, 25 dials at once, 2 hashing goroutines).
+	// FitGirl torrents have big swarms; these values are closer to
+	// qBittorrent's and let the engine find and keep fast peers.
+	cfg.EstablishedConnsPerTorrent = 100
+	cfg.HalfOpenConnsPerTorrent = 50
+	cfg.TotalHalfOpenConns = 200
+	cfg.TorrentPeersHighWater = 1000
+	cfg.DialRateLimiter = rate.NewLimiter(40, 40)
+	cfg.PieceHashersPerTorrent = 4
 	if configHook != nil {
 		configHook(cfg)
 	}
