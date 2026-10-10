@@ -197,6 +197,11 @@ func (e *Engine) addLocked(saved savedTorrent) (*item, error) {
 			return baseDir
 		},
 		FilePathMaker: func(opts storage.FilePathMakerOpts) string {
+			// Single-file torrents have no path of their own: the file is
+			// named after the torrent.
+			if len(opts.File.BestPath()) == 0 {
+				return opts.Info.BestName()
+			}
 			return filepath.Join(opts.File.BestPath()...)
 		},
 	})
