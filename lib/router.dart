@@ -11,7 +11,7 @@ import 'package:fitgirl_mobile_flutter/widgets/app_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-final _rootNavigatorKey = GlobalKey<NavigatorState>();
+final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 /// Game details live inside every tab so the navigation (bottom bar or
 /// desktop sidebar) stays visible.
@@ -24,7 +24,7 @@ GoRoute _gameRoute() => GoRoute(
 );
 
 final router = GoRouter(
-  navigatorKey: _rootNavigatorKey,
+  navigatorKey: rootNavigatorKey,
   initialLocation: '/',
   routes: [
     StatefulShellRoute.indexedStack(
@@ -87,7 +87,7 @@ final router = GoRouter(
     ),
     GoRoute(
       path: '/select-files',
-      parentNavigatorKey: _rootNavigatorKey,
+      parentNavigatorKey: rootNavigatorKey,
       builder: (context, state) {
         final extra = state.extra as Map<String, dynamic>?;
         if (extra == null) {

@@ -2,7 +2,10 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "FitGirl Downloader"
-#define MyAppVersion "1.0"
+; CI passes the real version: iscc /DMyAppVersion=2026.10.11.42
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0"
+#endif
 #define MyAppPublisher "Sriharan"
 #define MyAppExeName "fitgirl_mobile_flutter.exe"
 
@@ -50,4 +53,6 @@ Type: files; Name: "{autoprograms}\FitGirl Mobile.lnk"
 Type: files; Name: "{autodesktop}\FitGirl Mobile.lnk"
 
 [Run]
+; In-app updates run this installer with /SILENT: start the app again afterwards.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent

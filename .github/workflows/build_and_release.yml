@@ -23,19 +23,30 @@ jobs:
     outputs:
       version: ${{ steps.tagger.outputs.tag }}
       is_prerelease: ${{ steps.tagger.outputs.is_prerelease }}
+      build_name: ${{ steps.tagger.outputs.build_name }}
+      build_number: ${{ steps.tagger.outputs.build_number }}
+      build_args: ${{ steps.tagger.outputs.build_args }}
     steps:
       - name: Generate Tag and Name
         id: tagger
         run: |
-          DATE=$(date +'%Y.%m.%d')
+          # Version = date + run number, e.g. v2026.10.11.42. It increases
+          # with every build, so the in-app updater can compare versions
+          # and Android accepts the APK as an upgrade (versionCode = run).
+          DATE=$(date +'%Y.%-m.%-d')
+          RUN=${{ github.run_number }}
           SHA_SHORT=$(echo $GITHUB_SHA | cut -c1-7)
           if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "tag=v${DATE}-dev-${SHA_SHORT}" >> $GITHUB_OUTPUT
+            TAG="v${DATE}.${RUN}-dev-${SHA_SHORT}"
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
           else
-            echo "tag=v${DATE}" >> $GITHUB_OUTPUT
+            TAG="v${DATE}.${RUN}"
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
           fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "build_name=${DATE}" >> $GITHUB_OUTPUT
+          echo "build_number=${RUN}" >> $GITHUB_OUTPUT
+          echo "build_args=--build-name=${DATE} --build-number=${RUN} --dart-define=APP_VERSION=${TAG}" >> $GITHUB_OUTPUT
 
   # -----------------------------------------------------------------
   # JOB 1: Build Android
@@ -62,7 +73,7 @@ jobs:
         run: |
           flutter pub get
           # Surface build errors as annotations (job logs need repo access)
-          flutter build apk --release 2>&1 | tee build.log; status=${PIPESTATUS[0]}
+          flutter build apk --release ${{ needs.get-version.outputs.build_args }} 2>&1 | tee build.log; status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             grep -iE "error|failed|What went wrong" -A3 build.log | head -40 | sed 's/^/::error::/'
             exit "$status"
@@ -96,7 +107,7 @@ jobs:
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
 
       - name: Build Linux
-        run: flutter pub get && flutter build linux --release
+        run: flutter pub get && flutter build linux --release ${{ needs.get-version.outputs.build_args }}
 
       - name: Compress Build
         run: |
@@ -126,7 +137,7 @@ jobs:
         run: |
           flutter pub get
           # Surface compiler errors as annotations (job logs need repo access)
-          flutter build windows --release 2>&1 | tee build.log; status=${PIPESTATUS[0]}
+          flutter build windows --release ${{ needs.get-version.outputs.build_args }} 2>&1 | tee build.log; status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             grep -iE "error|failed" build.log | head -25 | sed 's/^/::error::/'
             exit "$status"
@@ -135,7 +146,7 @@ jobs:
       - name: Create Installer (Inno Setup)
         run: |
           choco install innosetup
-          iscc windows/installer.iss
+          iscc /DMyAppVersion=${{ needs.get-version.outputs.build_name }}.${{ needs.get-version.outputs.build_number }} windows/installer.iss
           
       - name: Rename Installer
         run: mv build/windows/x64/installer/fitgirl_setup.exe FitGirl-Downloader-${{ needs.get-version.outputs.version }}-windows-setup.exe
@@ -162,7 +173,7 @@ jobs:
       - run: flutter pub get
 
       - name: Build macOS
-        run: flutter build macos --release
+        run: flutter build macos --release ${{ needs.get-version.outputs.build_args }}
 
       - name: Compress macOS Build
         run: |
@@ -170,7 +181,7 @@ jobs:
           zip -r ../../../../../FitGirl-Downloader-${{ needs.get-version.outputs.version }}-macos-universal.zip .
       
       - name: Build iOS
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign ${{ needs.get-version.outputs.build_args }}
 
       - name: Compress iOS Build
         run: |
@@ -209,5 +220,6 @@ jobs:
           name: Release ${{ needs.get-version.outputs.version }}
           prerelease: ${{ needs.get-version.outputs.is_prerelease }}
           files: release_files/*
+          generate_release_notes: true
         env:
           TOKEN: ${{ secrets.TOKEN }}

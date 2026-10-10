@@ -1,10 +1,12 @@
 import 'dart:io';
 
+import 'package:fitgirl_mobile_flutter/core/app_version.dart';
 import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
 import 'package:fitgirl_mobile_flutter/services/settings_service.dart';
+import 'package:fitgirl_mobile_flutter/widgets/update_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -176,16 +178,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         _ShortcutRow('Ctrl + F', 'Search'),
                       ],
                     ),
-                    const _Section(
+                    _Section(
                       title: 'About',
                       children: [
-                        ListTile(
+                        const ListTile(
                           leading: Icon(LucideIcons.info),
                           title: Text('FitGirl Downloader'),
                           subtitle: Text(
                             'Unofficial fan-made client. Not affiliated with FitGirl Repacks.',
                             style: TextStyle(color: AppTheme.textMuted),
                           ),
+                        ),
+                        ListTile(
+                          leading: const Icon(LucideIcons.refreshCw),
+                          title: const Text('Check for updates'),
+                          subtitle: Text(
+                            'Version ${AppVersion.label(AppVersion.current)}',
+                            style: const TextStyle(color: AppTheme.textMuted),
+                          ),
+                          onTap: () => checkForUpdatesManually(context),
                         ),
                       ],
                     ),
