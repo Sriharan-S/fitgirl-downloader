@@ -129,6 +129,7 @@ class DownloadService {
     required String totalGameSize,
     String? gameUrl,
     List<String> allUrls = const [],
+    Map<String, List<String>> alternates = const {},
   }) async {
     final existing = _indexOf(gameTitle);
     if (existing != -1) {
@@ -149,6 +150,7 @@ class DownloadService {
         urls: urls,
         totalGameSize: totalGameSize,
         originalUrls: allUrls,
+        alternates: alternates,
       ),
     );
     _changed(saveNow: true);
@@ -509,8 +511,12 @@ class DownloadService {
 
     String? direct;
     String? error;
+    var permanent = false;
     try {
-      direct = await _resolveDirectLink(url);
+      direct = await _resolveDirectLink(title, url);
+    } on MirrorException catch (e) {
+      error = e.message;
+      permanent = e.permanent;
     } catch (e) {
       error = 'Could not get download link: $e';
     }
@@ -532,6 +538,7 @@ class DownloadService {
         title,
         url,
         error ?? 'Mirror did not return a download link',
+        permanent: permanent,
       );
       return;
     }
@@ -594,18 +601,66 @@ class DownloadService {
     }
   }
 
-  Future<String?> _resolveDirectLink(String url) async {
-    if (!(url.contains('fuckingfast.co') || url.contains('datanodes.to'))) {
-      return url; // Already direct
+  static bool _isHostedMirror(String url) =>
+      url.contains('fuckingfast.co') || url.contains('datanodes.to');
+
+  /// Turns a file's mirror page into a direct link. Tries the file's own
+  /// mirror, then the same file on other mirrors (looked up from the game
+  /// page if not known yet). Throws [MirrorException] with the last reason.
+  Future<String> _resolveDirectLink(String title, String url) async {
+    final file = _findFile(title, url);
+    if (file == null) throw const MirrorException('File was removed');
+    if (!_isHostedMirror(url)) return url; // Already a direct link
+
+    String? lastError;
+    var allPermanent = true;
+    Future<String?> tryEach(List<String> candidates) async {
+      for (final candidate in candidates) {
+        if (!_isHostedMirror(candidate)) return candidate;
+        try {
+          final link = await ScraperService()
+              .getDirectDownloadLink(candidate)
+              .timeout(const Duration(seconds: 60));
+          if (link != null) return link;
+          lastError = 'Mirror did not return a download link';
+          allPermanent = false;
+        } on MirrorException catch (e) {
+          lastError = e.message;
+          allPermanent &= e.permanent;
+        } on TimeoutException {
+          lastError = 'Mirror did not respond in time';
+          allPermanent = false;
+        } catch (e) {
+          lastError = 'Could not reach mirror: $e';
+          allPermanent = false;
+        }
+      }
+      return null;
     }
-    for (var attempt = 0; attempt < 2; attempt++) {
-      final link = await ScraperService()
-          .getDirectDownloadLink(url)
-          .timeout(const Duration(seconds: 30), onTimeout: () => null);
-      if (link != null) return link;
-      await Future.delayed(const Duration(seconds: 2));
+
+    final link = await tryEach([url, ...file.alternates]);
+    if (link != null) return link;
+
+    // Downloads queued before alternates were tracked: look them up now.
+    final i = _indexOf(title);
+    final gameUrl = i == -1 ? null : _sessions[i].gameUrl;
+    if (file.alternates.isEmpty && gameUrl != null && gameUrl.isNotEmpty) {
+      try {
+        final found = await ScraperService().findAlternateMirrors(gameUrl, url);
+        if (found.isNotEmpty) {
+          _updateFile(title, url, (f) => f.copyWith(alternates: found));
+          _changed(saveNow: true);
+          final alt = await tryEach(found);
+          if (alt != null) return alt;
+        }
+      } catch (e) {
+        debugPrint('DownloadService: alternate lookup failed: $e');
+      }
     }
-    return null;
+    throw MirrorException(
+      lastError ?? 'No download link',
+      permanent: allPermanent,
+    );
   }
 
   Future<DownloadTask> _buildTask(
@@ -706,11 +761,16 @@ class DownloadService {
     } catch (_) {}
   }
 
-  void _handleFailure(String title, String url, String error) {
+  void _handleFailure(
+    String title,
+    String url,
+    String error, {
+    bool permanent = false,
+  }) {
     final f = _findFile(title, url);
     if (f == null) return;
     final attempts = f.attempts + 1;
-    final retry = attempts <= _settings.autoRetries;
+    final retry = !permanent && attempts <= _settings.autoRetries;
 
     _updateFile(
       title,

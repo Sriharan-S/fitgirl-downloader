@@ -266,6 +266,10 @@ class _GameDetailsScreenState extends ConsumerState<GameDetailsScreen> {
       urls: urls,
       allUrls: allUrls,
       totalGameSize: game.repackSize ?? game.size,
+      // Same files on the other mirrors, used if this mirror fails.
+      alternates: {
+        for (final u in urls) u: ScraperService.alternateMirrorsIn(game, u),
+      },
     );
     if (!mounted) return;
     _snack(

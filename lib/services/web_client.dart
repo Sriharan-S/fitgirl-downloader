@@ -40,15 +40,50 @@ class WebClient {
     Map<String, String>? headers,
     Duration timeout = const Duration(seconds: 20),
     int retries = 2,
+  }) => _withRetries(
+    () => _send('GET', url, headers: headers, followRedirects: true),
+    timeout: timeout,
+    retries: retries,
+  );
+
+  /// POSTs a form. [fields] are sent url-encoded, or as multipart when
+  /// [multipart] is true. Redirects are not followed by default because
+  /// file hosts use them to signal rejected requests.
+  Future<http.Response> post(
+    Uri url, {
+    Map<String, String>? headers,
+    Map<String, String>? fields,
+    bool multipart = false,
+    bool followRedirects = false,
+    Duration timeout = const Duration(seconds: 20),
+    int retries = 1,
+  }) => _withRetries(
+    () => _send(
+      'POST',
+      url,
+      headers: headers,
+      fields: fields,
+      multipart: multipart,
+      followRedirects: followRedirects,
+    ),
+    timeout: timeout,
+    retries: retries,
+  );
+
+  /// Adds a cookie that is sent with every later request to [host].
+  void setCookie(String host, String name, String value) =>
+      _cookies.putIfAbsent(host, () => {})[name] = value;
+
+  Future<http.Response> _withRetries(
+    Future<http.Response> Function() request, {
+    required Duration timeout,
+    required int retries,
   }) async {
     await _acquire();
     try {
       for (var attempt = 0; ; attempt++) {
         try {
-          final res = await _getFollowingRedirects(
-            url,
-            headers,
-          ).timeout(timeout);
+          final res = await request().timeout(timeout);
           final retryable = res.statusCode == 429 || res.statusCode >= 500;
           if (retryable && attempt < retries) {
             await _backoff(attempt);
@@ -70,13 +105,27 @@ class WebClient {
     }
   }
 
-  Future<http.Response> _getFollowingRedirects(
-    Uri url,
+  Future<http.Response> _send(
+    String method,
+    Uri url, {
     Map<String, String>? headers,
-  ) async {
+    Map<String, String>? fields,
+    bool multipart = false,
+    required bool followRedirects,
+  }) async {
     var uri = url;
+    var verb = method;
     for (var hop = 0; hop < 10; hop++) {
-      final request = http.Request('GET', uri)
+      final http.BaseRequest request;
+      if (verb == 'POST' && multipart) {
+        request = http.MultipartRequest('POST', uri)
+          ..fields.addAll(fields ?? {});
+      } else {
+        final r = http.Request(verb, uri);
+        if (verb == 'POST' && fields != null) r.bodyFields = fields;
+        request = r;
+      }
+      request
         ..followRedirects = false
         ..headers.addAll({..._browserHeaders, ...?headers});
       final cookie = _cookieHeader(uri.host);
@@ -88,8 +137,11 @@ class WebClient {
       _storeCookies(uri.host, response);
 
       final location = response.headers['location'];
-      if (_isRedirect(response.statusCode) && location != null) {
+      if (followRedirects &&
+          _isRedirect(response.statusCode) &&
+          location != null) {
         uri = uri.resolve(location);
+        verb = 'GET'; // Browsers turn a redirected POST into a GET
         continue;
       }
       return response;

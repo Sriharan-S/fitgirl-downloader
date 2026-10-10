@@ -1,4 +1,8 @@
+import 'dart:convert';
+
+import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 import 'package:fitgirl_mobile_flutter/services/web_client.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as parser;
 import 'package:html/dom.dart';
@@ -562,7 +566,8 @@ class ScraperService {
     }
   }
 
-  /// Extracts the direct download link from a supported mirror (FuckingFast, DataNodes)
+  /// Resolves a mirror page (FuckingFast, DataNodes) to a direct download
+  /// link. Throws [MirrorException] with a user-readable reason on failure.
   Future<String?> getDirectDownloadLink(String url) async {
     debugPrint('ScraperService: Extracting direct link for $url');
     if (url.contains('fuckingfast.co')) {
@@ -573,65 +578,203 @@ class ScraperService {
     return null;
   }
 
-  /// Helper to extract URL from window.open() calls (Ported from Python UniversalExtractor)
+  /// Other mirrors of the same file, matched by file name, taken from the
+  /// game page (e.g. the FuckingFast copy of a DataNodes file).
+  Future<List<String>> findAlternateMirrors(
+    String gameUrl,
+    String fileUrl,
+  ) async {
+    final game = await getGameDetails(gameUrl);
+    if (game == null) return const [];
+    return alternateMirrorsIn(game, fileUrl);
+  }
+
+  /// Same as [findAlternateMirrors] for an already loaded [game].
+  static List<String> alternateMirrorsIn(Game game, String fileUrl) {
+    final name = fileNameFromUrl(fileUrl).toLowerCase();
+    if (name.isEmpty) return const [];
+    final result = <String>[];
+    for (final list in game.mirrors.values) {
+      for (final candidate in list.split('\n')) {
+        final c = candidate.trim();
+        if (c.isEmpty || c == fileUrl.trim()) continue;
+        if (fileNameFromUrl(c).toLowerCase() == name) result.add(c);
+      }
+    }
+    // Prefer FuckingFast: no captcha and the fastest servers.
+    int rank(String u) => u.contains('fuckingfast') ? 0 : 1;
+    result.sort((a, b) => rank(a).compareTo(rank(b)));
+    return result;
+  }
+
+  /// Helper to extract URL from window.open() calls (older page layouts).
   String? _extractWindowOpenUrl(String html) {
-    // Regex matches: window.open("http..." or window.open('http...'
-    // Using triple-quote raw string to safely allow both ' and "
     final regex = RegExp(r'''window\.open\(.*?['"](https?://[^\s'")]+)['"]''');
     final match = regex.firstMatch(html);
     return match?.group(1);
   }
 
+  /// FuckingFast: the DOWNLOAD button POSTs to `/f/<id>/go` and the direct
+  /// link comes back in the HX-Redirect header (htmx).
   Future<String?> _getFuckingFastLink(String url) async {
-    try {
-      final response = await _web.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        },
-      );
-
-      // Try robust window.open finding (Python Logic)
-      final directLink = _extractWindowOpenUrl(response.body);
-      if (directLink != null) return directLink;
-
-      // Fallback to specific FF regex if generic fails
-      final regex = RegExp(r'https://fuckingfast.co/dl/[a-zA-Z0-9_-]+');
-      final match = regex.firstMatch(response.body);
-      return match?.group(0);
-    } catch (e) {
-      debugPrint('Error parsing FuckingFast link: $e');
+    final uri = Uri.parse(url.trim());
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.isEmpty) {
+      throw const MirrorException('Invalid FuckingFast link');
     }
-    return null;
+    final id = segments.first == 'f' && segments.length > 1
+        ? segments[1]
+        : segments.first;
+    final page = 'https://fuckingfast.co/$id';
+
+    final res = await _web.post(
+      Uri.parse('https://fuckingfast.co/f/$id/go'),
+      headers: {
+        'HX-Request': 'true',
+        'HX-Current-URL': page,
+        'Referer': page,
+        'Origin': 'https://fuckingfast.co',
+      },
+    );
+    if (res.statusCode == 404) {
+      throw const MirrorException(
+        'File was removed from FuckingFast',
+        permanent: true,
+      );
+    }
+    final link = res.headers['hx-redirect'];
+    if (link != null && link.startsWith('http')) return link;
+
+    // Older layout: the link was embedded in the page.
+    final html = (await _web.get(Uri.parse(page))).body;
+    final legacy =
+        _extractWindowOpenUrl(html) ??
+        RegExp(
+          r'https://(?:dl\.)?fuckingfast\.co/dl/[A-Za-z0-9_-]+',
+        ).firstMatch(html)?.group(0);
+    if (legacy != null) return legacy;
+    throw MirrorException(
+      'FuckingFast did not return a download link (HTTP ${res.statusCode})',
+    );
   }
 
+  /// DataNodes (XFileSharing): POST op=download2 and read the JSON `url`.
+  /// The host changes this flow regularly, so the known variants are tried
+  /// in turn with the cookies from the file page.
   Future<String?> _getDataNodesLink(String url) async {
-    try {
-      final response = await _web.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        },
-      );
-
-      // 1. Try generic window.open matching (Python Fallback Logic)
-      final directLink = _extractWindowOpenUrl(response.body);
-      if (directLink != null) return directLink;
-
-      // 2. Try extraction from "Download" button if present (Python Logic)
-      // Python: soup.find('a', class_='download-btn')
-      // Regex for <a href="..." class="download-btn">
-      final btnRegex = RegExp(
-        r'''<a\s+(?:[^>]*?\s+)?href=['"](https?://[^'"]+)['"][^>]*?class=['"][^'"]*download-btn[^'"]*['"]''',
-      );
-      final btnMatch = btnRegex.firstMatch(response.body);
-      if (btnMatch != null) return btnMatch.group(1);
-    } catch (e) {
-      debugPrint('Error parsing DataNodes link: $e');
+    final fileUri = Uri.parse(url.trim());
+    final segments = fileUri.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.isEmpty) {
+      throw const MirrorException('Invalid DataNodes link');
     }
-    return null;
+    final code = segments.first;
+    final fileName = segments.length > 1 ? segments.last : '';
+    const host = 'datanodes.to';
+
+    _web.setCookie(host, 'lang', 'english');
+    _web.setCookie(host, 'file_code', code);
+    if (fileName.isNotEmpty) _web.setCookie(host, 'file_name', fileName);
+
+    // Visit the file page first: it sets the session cookies.
+    final page = await _web.get(fileUri);
+    if (page.statusCode == 404 ||
+        page.body.contains('File Not Found') ||
+        page.body.contains('file was removed')) {
+      throw const MirrorException(
+        'File was removed from DataNodes',
+        permanent: true,
+      );
+    }
+
+    const download = 'https://datanodes.to/download';
+    final attempts = <Future<http.Response> Function()>[
+      // Current (2026): POST to the file's own URL.
+      () => _web.post(
+        fileUri,
+        fields: {
+          'op': 'download2',
+          'id': code,
+          'rand': '',
+          'referer': '',
+          'method_free': 'Free Download >>',
+          'method_premium': '',
+          'g_captch__a': '1',
+        },
+      ),
+      // Variant sent by the site's own front-end (multipart to /download).
+      () => _web.post(
+        Uri.parse(download),
+        multipart: true,
+        headers: {
+          'Accept': '*/*',
+          'Origin': 'https://datanodes.to',
+          'Referer': download,
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+        },
+        fields: {
+          'op': 'download2',
+          'id': code,
+          'rand': '',
+          'referer': download,
+          'method_free': 'Free Download >>',
+          'method_premium': '',
+          '__dl': '1',
+          'g_captch__a': '1',
+        },
+      ),
+      // Legacy form.
+      () => _web.post(
+        Uri.parse(download),
+        headers: {'Origin': 'https://datanodes.to', 'Referer': download},
+        fields: {
+          'op': 'download2',
+          'id': code,
+          'rand': '',
+          'referer': download,
+          'method_free': 'Free Download >>',
+          'method_premium': '',
+          'dl': '1',
+        },
+      ),
+    ];
+
+    int? lastStatus;
+    for (final attempt in attempts) {
+      try {
+        final res = await attempt();
+        lastStatus = res.statusCode;
+        final link = _dataNodesLinkFrom(res);
+        if (link != null) return link;
+      } catch (e) {
+        debugPrint('DataNodes attempt failed: $e');
+      }
+    }
+    throw MirrorException(
+      'DataNodes refused the request'
+      '${lastStatus != null ? ' (HTTP $lastStatus)' : ''}; '
+      'it may require browser verification',
+    );
+  }
+
+  String? _dataNodesLinkFrom(http.Response res) {
+    // JSON {"url": "<percent-encoded link>"}
+    try {
+      final data = jsonDecode(res.body);
+      if (data is Map && data['url'] is String) {
+        final link = Uri.decodeFull(data['url'] as String);
+        if (link.startsWith('http')) return link;
+      }
+    } catch (_) {}
+    // Redirect straight to a file server (not back to the site itself).
+    final location = res.headers['location'];
+    if (location != null &&
+        location.startsWith('http') &&
+        !Uri.parse(location).host.endsWith('datanodes.to')) {
+      return location;
+    }
+    return _extractWindowOpenUrl(res.body);
   }
 
   /// Extracts FuckingFast/DataNodes links from a Pastebin page (e.g., pastefg.hermietkreeft.site)
@@ -706,4 +849,15 @@ class ScraperService {
       return [];
     }
   }
+}
+
+/// A mirror could not provide a download link. [message] is shown to the
+/// user; [permanent] means retrying the same link is pointless.
+class MirrorException implements Exception {
+  final String message;
+  final bool permanent;
+  const MirrorException(this.message, {this.permanent = false});
+
+  @override
+  String toString() => message;
 }

@@ -36,6 +36,9 @@ class DownloadFile {
   final String? error;
   final int attempts;
 
+  /// The same file on other mirrors, tried when [url] fails.
+  final List<String> alternates;
+
   const DownloadFile({
     required this.url,
     required this.name,
@@ -47,6 +50,7 @@ class DownloadFile {
     this.timeRemaining,
     this.error,
     this.attempts = 0,
+    this.alternates = const [],
   });
 
   factory DownloadFile.fromUrl(String url) =>
@@ -72,6 +76,7 @@ class DownloadFile {
     String? error,
     bool clearError = false,
     int? attempts,
+    List<String>? alternates,
   }) {
     return DownloadFile(
       url: url,
@@ -86,6 +91,7 @@ class DownloadFile {
           : (timeRemaining ?? this.timeRemaining),
       error: clearError ? null : (error ?? this.error),
       attempts: attempts ?? this.attempts,
+      alternates: alternates ?? this.alternates,
     );
   }
 
@@ -98,6 +104,7 @@ class DownloadFile {
     'expectedSize': expectedSize,
     'error': error,
     'attempts': attempts,
+    'alternates': alternates,
   };
 
   factory DownloadFile.fromJson(Map<String, dynamic> json) {
@@ -111,6 +118,7 @@ class DownloadFile {
       expectedSize: (json['expectedSize'] as num?)?.toInt() ?? -1,
       error: json['error'] as String?,
       attempts: (json['attempts'] as num?)?.toInt() ?? 0,
+      alternates: List<String>.from(json['alternates'] ?? const []),
     );
   }
 }
@@ -148,6 +156,7 @@ class DownloadSession {
     required String gameTitle,
     required String coverUrl,
     required List<String> urls,
+    Map<String, List<String>> alternates = const {},
     String? gameUrl,
     String totalGameSize = 'TBD',
     List<String> originalUrls = const [],
@@ -156,7 +165,10 @@ class DownloadSession {
       gameTitle: gameTitle,
       coverUrl: coverUrl,
       gameUrl: gameUrl,
-      files: urls.map(DownloadFile.fromUrl).toList(),
+      files: [
+        for (final u in urls)
+          DownloadFile.fromUrl(u).copyWith(alternates: alternates[u]),
+      ],
       totalGameSize: totalGameSize,
       originalUrls: originalUrls.isNotEmpty ? originalUrls : urls,
       createdAt: DateTime.now(),
