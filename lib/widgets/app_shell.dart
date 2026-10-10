@@ -75,23 +75,43 @@ class AppShell extends ConsumerWidget {
     } else {
       body = Scaffold(
         body: navigationShell,
-        bottomNavigationBar: NavigationBar(
-          height: 68,
-          selectedIndex: navigationShell.currentIndex,
-          onDestinationSelected: _go,
-          labelBehavior: context.isCompact
-              ? NavigationDestinationLabelBehavior.onlyShowSelected
-              : NavigationDestinationLabelBehavior.alwaysShow,
-          destinations: [
-            for (var i = 0; i < _destinations.length; i++)
-              NavigationDestination(
-                icon: _BadgedIcon(
-                  icon: _destinations[i].icon,
-                  count: i == _downloadsIndex ? active.length : 0,
+        // Fixed Material bar: every item keeps the same size and always
+        // shows its label; selection only changes the colour (no growing
+        // indicator or label animation).
+        bottomNavigationBar: DecoratedBox(
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: AppTheme.border)),
+          ),
+          child: BottomNavigationBar(
+            type: BottomNavigationBarType.fixed,
+            currentIndex: navigationShell.currentIndex,
+            onTap: _go,
+            backgroundColor: AppTheme.surfaceDark,
+            elevation: 0,
+            selectedItemColor: AppTheme.primaryGreen,
+            unselectedItemColor: AppTheme.textMuted,
+            iconSize: 22,
+            selectedFontSize: 12,
+            unselectedFontSize: 12,
+            selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
+            unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
+            showSelectedLabels: true,
+            showUnselectedLabels: true,
+            items: [
+              for (var i = 0; i < _destinations.length; i++)
+                BottomNavigationBarItem(
+                  icon: Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: _BadgedIcon(
+                      icon: _destinations[i].icon,
+                      count: i == _downloadsIndex ? active.length : 0,
+                    ),
+                  ),
+                  label: _destinations[i].label,
+                  tooltip: '',
                 ),
-                label: _destinations[i].label,
-              ),
-          ],
+            ],
+          ),
         ),
       );
     }

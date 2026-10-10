@@ -3,24 +3,31 @@ import 'dart:async';
 import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 import 'package:fitgirl_mobile_flutter/models/game.dart';
+import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
+import 'package:fitgirl_mobile_flutter/models/download_session.dart';
+import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
+import 'package:fitgirl_mobile_flutter/router.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
+import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
+import 'package:fitgirl_mobile_flutter/widgets/featured_carousel.dart';
 import 'package:fitgirl_mobile_flutter/services/scraper_service.dart';
-import 'package:fitgirl_mobile_flutter/widgets/game_card_horizontal.dart';
 import 'package:fitgirl_mobile_flutter/widgets/game_card_vertical.dart';
 import 'package:fitgirl_mobile_flutter/widgets/skeleton_game_cards.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-class DiscoverScreen extends StatefulWidget {
+class DiscoverScreen extends ConsumerStatefulWidget {
   const DiscoverScreen({super.key});
 
   @override
-  State<DiscoverScreen> createState() => _DiscoverScreenState();
+  ConsumerState<DiscoverScreen> createState() => _DiscoverScreenState();
 }
 
-class _DiscoverScreenState extends State<DiscoverScreen> {
+class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   static const _pageSize = 12;
+  static const _featuredCount = 5;
 
   final _scrollController = ScrollController();
   final _popularController = ScrollController();
@@ -114,8 +121,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     if (pos.pixels > pos.maxScrollExtent - 600) _loadNewlyAdded();
   }
 
-  void _scrollPopular(double direction) {
-    final target = (_popularController.offset + direction * 640).clamp(
+  void _scrollShelf(double direction) {
+    final target = (_popularController.offset + direction * 600).clamp(
       0.0,
       _popularController.position.maxScrollExtent,
     );
@@ -129,13 +136,18 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   @override
   Widget build(BuildContext context) {
     final wide = context.isWide;
-    final cardWidth = wide ? 340.0 : 300.0;
-    final carouselHeight = wide ? 220.0 : 196.0;
+    final featured = _popular.take(_featuredCount).toList();
+    final shelf = _popular.skip(_featuredCount).toList();
+    final active = ref
+        .watch(downloadsProvider)
+        .where((s) => !s.isCompleted)
+        .toList();
     final nothingLoaded =
         !_popularLoading &&
         !_newLoading &&
         _popular.isEmpty &&
         _newlyAdded.isEmpty;
+    final shelfCardWidth = wide ? 180.0 : 150.0;
 
     return Scaffold(
       body: SafeArea(
@@ -160,71 +172,100 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                             onPressed: _refresh,
                             icon: const Icon(LucideIcons.refreshCw),
                           ),
-                        IconButton(
-                          tooltip: 'Search (Ctrl+F)',
-                          onPressed: () => context.go('/search'),
-                          icon: const Icon(LucideIcons.search),
-                        ),
                       ],
                     ),
                   ),
                 ),
-
+                const SliverContent(
+                  extraPadding: EdgeInsets.only(top: 4, bottom: 16),
+                  sliver: SliverToBoxAdapter(child: _SearchPill()),
+                ),
                 if (nothingLoaded)
                   SliverFillRemaining(
                     hasScrollBody: false,
                     child: _ErrorState(onRetry: _refresh),
                   )
                 else ...[
-                  _sectionHeader(
-                    'Popular Now',
-                    trailing: wide && _popular.length > 2
-                        ? Row(
-                            children: [
-                              IconButton(
-                                tooltip: 'Previous',
-                                onPressed: () => _scrollPopular(-1),
-                                icon: const Icon(LucideIcons.chevronLeft),
-                              ),
-                              IconButton(
-                                tooltip: 'Next',
-                                onPressed: () => _scrollPopular(1),
-                                icon: const Icon(LucideIcons.chevronRight),
-                              ),
-                            ],
-                          )
-                        : null,
-                  ),
-                  SliverToBoxAdapter(
-                    child: ContentConstraint(
-                      child: SizedBox(
-                        height: carouselHeight,
-                        child: ListView.separated(
-                          controller: _popularController,
-                          padding: EdgeInsets.symmetric(
-                            horizontal: context.pagePadding,
-                            vertical: 6,
-                          ),
-                          scrollDirection: Axis.horizontal,
-                          itemCount: _popular.isEmpty && _popularLoading
-                              ? 4
-                              : _popular.length + (_popularLoading ? 1 : 0),
-                          separatorBuilder: (_, _) => const SizedBox(width: 16),
-                          itemBuilder: (context, index) {
-                            if (index >= _popular.length) {
-                              return const SkeletonGameCardHorizontal();
-                            }
-                            return GameCardHorizontal(
-                              game: _popular[index],
-                              width: cardWidth,
-                            );
-                          },
-                        ),
+                  SliverContent(
+                    sliver: SliverToBoxAdapter(
+                      child: FeaturedCarousel(
+                        games: featured,
+                        loading: _popularLoading,
                       ),
                     ),
                   ),
-
-                  _sectionHeader('Newly Added'),
+                  if (active.isNotEmpty) ...[
+                    _sectionHeader(
+                      'Continue downloading',
+                      trailing: TextButton(
+                        onPressed: () => context.go('/downloads'),
+                        child: const Text('See all'),
+                      ),
+                    ),
+                    SliverToBoxAdapter(
+                      child: ContentConstraint(
+                        child: SizedBox(
+                          height: 92,
+                          child: ListView.separated(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: context.pagePadding,
+                            ),
+                            scrollDirection: Axis.horizontal,
+                            itemCount: active.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, i) =>
+                                _ActiveDownloadChip(session: active[i]),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (shelf.isNotEmpty || _popularLoading) ...[
+                    _sectionHeader(
+                      'Popular now',
+                      trailing: wide && shelf.length > 4
+                          ? Row(
+                              children: [
+                                IconButton(
+                                  tooltip: 'Previous',
+                                  onPressed: () => _scrollShelf(-1),
+                                  icon: const Icon(LucideIcons.chevronLeft),
+                                ),
+                                IconButton(
+                                  tooltip: 'Next',
+                                  onPressed: () => _scrollShelf(1),
+                                  icon: const Icon(LucideIcons.chevronRight),
+                                ),
+                              ],
+                            )
+                          : null,
+                    ),
+                    SliverToBoxAdapter(
+                      child: ContentConstraint(
+                        child: SizedBox(
+                          height: shelfCardWidth / GameCardVertical.aspectRatio,
+                          child: ListView.separated(
+                            controller: _popularController,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: context.pagePadding,
+                            ),
+                            scrollDirection: Axis.horizontal,
+                            itemCount: shelf.isEmpty ? 5 : shelf.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(width: 14),
+                            itemBuilder: (context, i) => SizedBox(
+                              width: shelfCardWidth,
+                              child: shelf.isEmpty
+                                  ? const SkeletonGameCardVertical()
+                                  : GameCardVertical(game: shelf[i]),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  _sectionHeader('Newly added'),
                   SliverContent(
                     sliver: SliverGrid(
                       gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
@@ -246,7 +287,6 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                       ),
                     ),
                   ),
-
                   if (_hasMore && !_newLoading && !_loadingMore)
                     SliverToBoxAdapter(
                       child: Padding(
@@ -279,7 +319,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             context.pagePadding,
-            20,
+            24,
             context.pagePadding - 8,
             10,
           ),
@@ -296,6 +336,115 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               ),
               ?trailing,
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Tappable search field that jumps to the Search tab.
+class _SearchPill extends StatelessWidget {
+  const _SearchPill();
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640),
+        child: Material(
+          color: AppTheme.surfaceHighlight,
+          borderRadius: BorderRadius.circular(28),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(28),
+            onTap: () => context.go('/search'),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              child: Row(
+                children: [
+                  Icon(LucideIcons.search, size: 20, color: AppTheme.textMuted),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Search games',
+                      style: TextStyle(color: AppTheme.textMuted, fontSize: 15),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ActiveDownloadChip extends StatelessWidget {
+  final DownloadSession session;
+  const _ActiveDownloadChip({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    final running = s.status == SessionStatus.downloading;
+    final pct = '${(s.overallProgress * 100).toStringAsFixed(0)}%';
+    return SizedBox(
+      width: 300,
+      child: Material(
+        color: AppTheme.surfaceDark,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => openDownloadDetails(context, s.gameTitle),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: Row(
+              children: [
+                CoverImage(url: s.coverUrl, width: 52, height: 70, radius: 8),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        s.gameTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      GreenProgressBar(
+                        value: s.overallProgress,
+                        height: 5,
+                        color: s.isPaused ? AppTheme.warning : null,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        running
+                            ? '$pct  ${formatSpeed(s.networkSpeed)}'
+                            : '$pct  ${sessionStatusStyle(s.status).label}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: running
+                              ? AppTheme.primaryGreen
+                              : AppTheme.textMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

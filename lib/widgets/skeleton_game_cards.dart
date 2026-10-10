@@ -2,25 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
 
-class SkeletonGameCardHorizontal extends StatelessWidget {
-  const SkeletonGameCardHorizontal({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Shimmer.fromColors(
-      baseColor: AppTheme.surfaceHighlight,
-      highlightColor: Colors.white12,
-      child: Container(
-        width: 300,
-        decoration: BoxDecoration(
-          color: Colors.black,
-          borderRadius: BorderRadius.circular(12),
-        ),
-      ),
-    );
-  }
-}
-
 class SkeletonGameCardVertical extends StatelessWidget {
   const SkeletonGameCardVertical({super.key});
 
