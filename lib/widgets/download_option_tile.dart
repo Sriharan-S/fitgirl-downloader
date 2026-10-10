@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class DownloadOptionTile extends StatelessWidget {
   final String title;
@@ -38,13 +38,13 @@ class DownloadOptionTile extends StatelessWidget {
         : (isRecommended ? AppTheme.primaryGreen : Colors.grey);
 
     final Color subtitleColor = isPremium
-        ? Colors.amber.withOpacity(0.7)
+        ? Colors.amber.withValues(alpha: 0.7)
         : (isRecommended ? AppTheme.primaryGreen : Colors.grey[600]!);
 
     final Color iconBgColor = isPremium
-        ? Colors.amber.withOpacity(0.1)
+        ? Colors.amber.withValues(alpha: 0.1)
         : (isRecommended
-              ? AppTheme.primaryGreen.withOpacity(0.1)
+              ? AppTheme.primaryGreen.withValues(alpha: 0.1)
               : Colors.white10);
 
     return Material(

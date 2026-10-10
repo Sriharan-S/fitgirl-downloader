@@ -1,973 +1,766 @@
+import 'package:fitgirl_mobile_flutter/core/layout/responsive.dart';
 import 'package:fitgirl_mobile_flutter/core/theme/app_theme.dart';
-
+import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
+import 'package:fitgirl_mobile_flutter/models/download_session.dart';
 import 'package:fitgirl_mobile_flutter/providers/download_provider.dart';
 import 'package:fitgirl_mobile_flutter/services/download_service.dart';
+import 'package:fitgirl_mobile_flutter/widgets/download_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lucide_icons/lucide_icons.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:fitgirl_mobile_flutter/models/game.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-class GameDownloadDetailsScreen extends ConsumerStatefulWidget {
+/// Full-page version (phones / narrow windows).
+class GameDownloadDetailsScreen extends StatelessWidget {
   final String gameTitle;
 
   const GameDownloadDetailsScreen({super.key, required this.gameTitle});
 
   @override
-  ConsumerState<GameDownloadDetailsScreen> createState() =>
-      _GameDownloadDetailsScreenState();
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Download details', style: TextStyle(fontSize: 18)),
+        leading: IconButton(
+          tooltip: 'Back',
+          icon: const Icon(LucideIcons.arrowLeft),
+          onPressed: () =>
+              context.canPop() ? context.pop() : context.go('/downloads'),
+        ),
+      ),
+      body: DownloadDetailsView(gameTitle: gameTitle),
+    );
+  }
 }
 
-class _GameDownloadDetailsScreenState
-    extends ConsumerState<GameDownloadDetailsScreen> {
-  bool _showAllFiles = false;
+enum _FileFilter { all, active, queued, done, failed }
+
+/// Details of one game download. Used as a page and as the right-hand pane of
+/// the desktop Downloads screen.
+class DownloadDetailsView extends ConsumerStatefulWidget {
+  final String gameTitle;
+  final VoidCallback? onRemoved;
+
+  const DownloadDetailsView({
+    super.key,
+    required this.gameTitle,
+    this.onRemoved,
+  });
+
+  @override
+  ConsumerState<DownloadDetailsView> createState() =>
+      _DownloadDetailsViewState();
+}
+
+class _DownloadDetailsViewState extends ConsumerState<DownloadDetailsView> {
+  _FileFilter _filter = _FileFilter.all;
+
+  @override
+  void didUpdateWidget(covariant DownloadDetailsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.gameTitle != widget.gameTitle) _filter = _FileFilter.all;
+  }
+
+  bool _matches(DownloadFile f) {
+    switch (_filter) {
+      case _FileFilter.all:
+        return true;
+      case _FileFilter.active:
+        return f.status.isActive;
+      case _FileFilter.queued:
+        return f.status == FileStatus.queued || f.status == FileStatus.paused;
+      case _FileFilter.done:
+        return f.status == FileStatus.completed;
+      case _FileFilter.failed:
+        return f.status == FileStatus.failed;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    // 1. Watch the specific session
-    final sessions = ref.watch(downloadsProvider);
-    final sessionIndex = sessions.indexWhere(
-      (s) => s.gameTitle == widget.gameTitle,
-    );
-
-    if (sessionIndex == -1) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(
-          backgroundColor: Colors.black,
-          iconTheme: const IconThemeData(color: Colors.white),
-        ),
-        body: const Center(
-          child: Text(
-            'Session not found',
-            style: TextStyle(color: Colors.white),
-          ),
+    final session = ref.watch(downloadSessionProvider(widget.gameTitle));
+    if (session == null) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(LucideIcons.packageX, size: 48, color: Colors.white12),
+            SizedBox(height: 12),
+            Text(
+              'This download no longer exists',
+              style: TextStyle(color: AppTheme.textMuted),
+            ),
+          ],
         ),
       );
     }
 
-    final session = sessions[sessionIndex];
-    final isRunning = session.activeTaskIds.isNotEmpty && !session.isPaused;
+    // Active first, then waiting, then failed, then done — keeping order.
+    int rank(DownloadFile f) => switch (f.status) {
+      FileStatus.downloading || FileStatus.resolving => 0,
+      FileStatus.paused || FileStatus.queued => 1,
+      FileStatus.failed => 2,
+      FileStatus.completed => 3,
+    };
+    final indexed = session.files.indexed.toList()
+      ..sort((a, b) {
+        final r = rank(a.$2).compareTo(rank(b.$2));
+        return r != 0 ? r : a.$1.compareTo(b.$1);
+      });
+    final files = indexed.map((e) => e.$2).where(_matches).toList();
+    final pad = context.pagePadding;
 
-    // Calculate Stats
-    final completedCount = session.completedUrls.length;
-    final totalCount = session.totalFiles;
-    double overallProgress = session.overallProgress;
-
-    // ETA Calc (Rough)
-    String etaString = '--';
-    if (isRunning &&
-        session.networkSpeed > 0 &&
-        session.totalGameSize != 'TBD') {
-      // Try parsing total size
-      double totalMB = _parseSizeToMB(session.totalGameSize);
-      if (totalMB > 0) {
-        double remainingMB = totalMB * (1 - overallProgress);
-        double secondsRemaining =
-            remainingMB / session.networkSpeed; // MB / MB/s = s
-        if (secondsRemaining.isFinite && secondsRemaining > 0) {
-          etaString = _formatDuration(
-            Duration(seconds: secondsRemaining.toInt()),
-          );
-        }
-      }
-    }
-
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: const Text(
-          'Download Details',
-          style: TextStyle(color: Colors.white, fontSize: 18),
-        ),
-        centerTitle: true,
-        leading: IconButton(
-          icon: const Icon(LucideIcons.arrowLeft, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 1. Header (Image + Title)
-            Row(
+    return Scrollbar(
+      child: CustomScrollView(
+        slivers: [
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(pad, 16, pad, 0),
+            sliver: SliverList.list(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: CachedNetworkImage(
-                    imageUrl: session.coverUrl,
-                    width: 80,
-                    height: 110,
-                    fit: BoxFit.cover,
-                    errorWidget: (_, __, ___) =>
-                        Container(color: Colors.grey[800]),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        session.gameTitle,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[900],
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              LucideIcons.hardDrive,
-                              size: 12,
-                              color: Colors.grey,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              session.totalGameSize,
-                              style: const TextStyle(
-                                color: Colors.grey,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                _Header(session: session, onRemoved: widget.onRemoved),
+                const SizedBox(height: 20),
+                _ProgressCard(session: session),
+                const SizedBox(height: 12),
+                _StatsGrid(session: session),
+                const SizedBox(height: 24),
+                _filterBar(session),
+                const SizedBox(height: 12),
               ],
             ),
-
-            const SizedBox(height: 24),
-
-            // 2. Action Buttons
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton(
-                onPressed: () async {
-                  await DownloadService().togglePauseSession(session.gameTitle);
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isRunning
-                      ? Colors.amber
-                      : AppTheme.primaryGreen,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
+          ),
+          if (files.isEmpty)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(32),
+                child: Center(
+                  child: Text(
+                    'No files in this view',
+                    style: TextStyle(color: AppTheme.textMuted),
                   ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      isRunning ? LucideIcons.pause : LucideIcons.play,
-                      color: Colors.black,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      isRunning ? 'Pause Download' : 'Resume Download',
-                      style: const TextStyle(
-                        color: Colors.black,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
+              ),
+            )
+          else
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(pad, 0, pad, 40),
+              sliver: SliverList.builder(
+                itemCount: files.length,
+                itemBuilder: (context, i) => _FileRow(
+                  key: ValueKey(files[i].url),
+                  session: session,
+                  file: files[i],
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
 
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: OutlinedButton(
-                onPressed: () async {
-                  // 1. Pause if running
-                  bool wasRunning =
-                      session.activeTaskIds.isNotEmpty && !session.isPaused;
-                  if (wasRunning) {
-                    await DownloadService().togglePauseSession(
-                      session.gameTitle,
-                    );
-                  }
-
-                  if (!context.mounted) return;
-
-                  // 2. Prepare Data
-                  final allFiles = session.originalUrls.isNotEmpty
-                      ? session.originalUrls
-                      : [...session.pendingUrls, ...session.completedUrls];
-
-                  final currentSelection = [
-                    ...session.pendingUrls,
-                    ...session.completedUrls,
-                  ];
-
-                  // 3. Navigate to Selection
-                  final selectedFiles = await context.push<List<String>>(
-                    '/select-files',
-                    extra: {
-                      'game': Game(
-                        id: 'dummy', // Required by Game model
-                        title: session.gameTitle,
-                        coverUrl: session.coverUrl,
-                        url: '',
-                        size: session.totalGameSize,
-                        genre: 'Unknown',
-                        version: 'Unknown',
-                      ),
-                      'fileUrls': allFiles,
-                      'initialSelection': currentSelection,
-                      'completedFiles': session.completedUrls,
-                    },
-                  );
-
-                  // 4. Update Session if changed
-                  if (selectedFiles != null && context.mounted) {
-                    await DownloadService().updateSession(
-                      session.gameTitle,
-                      selectedFiles,
-                    );
-
-                    // 5. Resume if it was running or simply resume to process new queue
-                    // It is better UX to auto-resume after "Updating" files.
-                    // But we should check if session is currently paused (it IS, because we paused it).
-                    // So we implicitly resume.
-                    await DownloadService().togglePauseSession(
-                      session.gameTitle,
-                    );
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Download queue updated')),
-                    );
-                  } else {
-                    // User cancelled selection, resume if we paused it?
-                    if (wasRunning && context.mounted) {
-                      await DownloadService().togglePauseSession(
-                        session.gameTitle,
-                      );
-                    }
-                  }
-                },
-                style: OutlinedButton.styleFrom(
-                  side: BorderSide(color: Colors.grey[800]!),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
+  Widget _filterBar(DownloadSession s) {
+    final counts = {
+      _FileFilter.all: s.totalFiles,
+      _FileFilter.active: s.activeCount,
+      _FileFilter.queued: s.queuedCount + s.countWhere(FileStatus.paused),
+      _FileFilter.done: s.completedCount,
+      _FileFilter.failed: s.failedCount,
+    };
+    const labels = {
+      _FileFilter.all: 'All',
+      _FileFilter.active: 'Active',
+      _FileFilter.queued: 'Waiting',
+      _FileFilter.done: 'Done',
+      _FileFilter.failed: 'Failed',
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Files',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final f in _FileFilter.values)
+              if (f == _FileFilter.all || counts[f]! > 0)
+                ChoiceChip(
+                  label: Text('${labels[f]} ${counts[f]}'),
+                  selected: _filter == f,
+                  onSelected: (_) => setState(() => _filter = f),
+                  showCheckmark: false,
+                  selectedColor: AppTheme.primaryGreen,
+                  backgroundColor: AppTheme.surfaceDark,
+                  side: const BorderSide(color: AppTheme.border),
+                  labelStyle: TextStyle(
+                    color: _filter == f ? Colors.black : Colors.white70,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
                   ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(LucideIcons.list, color: Colors.grey[400]),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Pause and Select Files',
-                      style: TextStyle(
-                        color: Colors.grey[400],
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
 
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: OutlinedButton(
-                onPressed: () {
-                  _showCancelConfirmation(context, session);
-                },
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.red),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(LucideIcons.x, color: Colors.red),
-                    SizedBox(width: 8),
-                    Text(
-                      'Cancel Download',
-                      style: TextStyle(
-                        color: Colors.red,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+class _Header extends StatelessWidget {
+  final DownloadSession session;
+  final VoidCallback? onRemoved;
+  const _Header({required this.session, this.onRemoved});
 
-            const SizedBox(height: 24),
-
-            // 3. Stats Card
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFF111111),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withOpacity(0.05)),
-              ),
+  @override
+  Widget build(BuildContext context) {
+    final service = DownloadService();
+    final s = session;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CoverImage(url: s.coverUrl, width: 84, height: 116),
+            const SizedBox(width: 16),
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'TOTAL PROGRESS',
-                        style: TextStyle(
-                          color: Colors.grey,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
-                        ),
-                      ),
-                      Text(
-                        'ETA: $etaString',
-                        style: const TextStyle(
-                          color: Colors.grey,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '${(overallProgress * 100).toStringAsFixed(0)}%',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 6.0),
-                        child: Text(
-                          _formatProgressSizeString(
-                            session.totalGameSize,
-                            overallProgress,
-                          ),
-                          style: TextStyle(
-                            color: Colors.grey[400],
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: overallProgress,
-                      backgroundColor: Colors.grey[800],
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                        AppTheme.primaryGreen,
-                      ),
-                      minHeight: 8,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // 4. Grid Stats
-            Row(
-              children: [
-                Expanded(
-                  child: _buildStatCard(
-                    icon: LucideIcons.download,
-                    label: 'DOWNLOAD',
-                    value: '${session.networkSpeed.toStringAsFixed(1)} MB/s',
-                    color: AppTheme.primaryGreen,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildStatCard(
-                    icon: LucideIcons.upload,
-                    label: 'UPLOAD',
-                    value: '0 KB/s',
-                    color: Colors.grey,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            // Row 2 of stats (mocked for visual completeness)
-            Row(
-              children: [
-                Expanded(
-                  child: _buildStatCard(
-                    icon: LucideIcons.gauge,
-                    label: 'AVERAGE',
-                    // Use session avgSpeed
-                    value: '${session.avgSpeed.toStringAsFixed(1)} MB/s',
-                    color: Colors.grey,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildStatCard(
-                    icon: LucideIcons.zap,
-                    label: 'PEAK',
-                    // Use session peakSpeed
-                    value: '${session.peakSpeed.toStringAsFixed(1)} MB/s',
-                    color: Colors.grey,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-
-            // 5. Currently Downloading
-            const Text(
-              'Currently Downloading',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF111111),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withOpacity(0.05)),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: AppTheme.primaryGreen.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Icon(
-                          LucideIcons.file,
-                          color: AppTheme.primaryGreen,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              session.currentFileName.isEmpty
-                                  ? 'Waiting...'
-                                  : session.currentFileName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            Text(
-                              session.activeTaskIds.isNotEmpty
-                                  ? 'Part ${session.completedUrls.length + 1} of ${session.totalFiles}'
-                                  : 'Idle',
-                              style: const TextStyle(
-                                color: Colors.grey,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Text(
-                        '${(session.currentFileProgress * 100).toStringAsFixed(0)}%',
-                        style: const TextStyle(
-                          color: AppTheme.primaryGreen,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: session.currentFileProgress,
-                      backgroundColor: Colors.grey[800],
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                        AppTheme.primaryGreen,
-                      ),
-                      minHeight: 4,
+                  SelectableText(
+                    s.gameTitle,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Text(
-                        session.isPaused ? 'Paused' : 'Downloading...',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 10),
-                      ),
-                      Text(
-                        '-- / --',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 10),
+                      StatusChip(status: s.status),
+                      _Pill(icon: LucideIcons.hardDrive, text: s.totalGameSize),
+                      _Pill(
+                        icon: LucideIcons.calendar,
+                        text: 'Added ${formatRelativeDate(s.createdAt)}',
                       ),
                     ],
                   ),
                 ],
               ),
             ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Theme(
+          data: context.isCompact
+              ? _compactButtons(Theme.of(context))
+              : Theme.of(context),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (!s.isCompleted) PauseResumeButton(session: s),
+              OutlinedButton.icon(
+                onPressed: () => manageSessionFiles(context, s),
+                icon: const Icon(LucideIcons.listChecks, size: 18),
+                label: const Text('Add / remove files'),
+              ),
+              if (s.failedCount > 0)
+                OutlinedButton.icon(
+                  onPressed: () => service.retryFailed(s.gameTitle),
+                  icon: const Icon(LucideIcons.rotateCcw, size: 18),
+                  label: Text('Retry ${s.failedCount} failed'),
+                ),
+              if (service.canOpenFolders)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final ok = await service.openGameFolder(s.gameTitle);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Folder does not exist yet'),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(LucideIcons.folderOpen, size: 18),
+                  label: const Text('Open folder'),
+                ),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.danger,
+                  side: BorderSide(
+                    color: AppTheme.danger.withValues(alpha: 0.5),
+                  ),
+                ),
+                onPressed: () => confirmCancelSession(
+                  context,
+                  s,
+                  onCancelled: () {
+                    if (onRemoved != null) {
+                      onRemoved!();
+                    } else if (context.canPop()) {
+                      context.pop();
+                    }
+                  },
+                ),
+                icon: const Icon(LucideIcons.trash2, size: 18),
+                label: Text(s.isCompleted ? 'Remove' : 'Cancel'),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
-            const SizedBox(height: 24),
+  static ThemeData _compactButtons(ThemeData t) {
+    const pad = EdgeInsets.symmetric(horizontal: 12, vertical: 10);
+    return t.copyWith(
+      filledButtonTheme: FilledButtonThemeData(
+        style: t.filledButtonTheme.style?.copyWith(
+          padding: const WidgetStatePropertyAll(pad),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: t.outlinedButtonTheme.style?.copyWith(
+          padding: const WidgetStatePropertyAll(pad),
+        ),
+      ),
+    );
+  }
+}
 
-            // 6. Files List (Reordered: Active -> Queued -> Completed)
+class _Pill extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _Pill({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceHighlight,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: AppTheme.textMuted),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProgressCard extends StatelessWidget {
+  final DownloadSession session;
+  const _ProgressCard({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    final pct = s.overallProgress * 100;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                const Text(
-                  'Files',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
+                Text(
+                  '${pct.toStringAsFixed(pct >= 100 ? 0 : 1)}%',
+                  style: const TextStyle(
+                    fontSize: 34,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[900],
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    '${session.completedUrls.length}/${session.totalFiles} Completed',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 10),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        sessionProgressLabel(s),
+                        textAlign: TextAlign.end,
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      if (s.status == SessionStatus.downloading)
+                        Text(
+                          'ETA ${formatDuration(s.eta)}',
+                          style: const TextStyle(
+                            color: AppTheme.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-
-            // List Components
-            // 1. Current Active (Usually just 1, handled above but let's show in list too?)
-            // User requested "currently downloading and queued should be on top".
-            // We already showed "Currently Downloading" as a big card.
-            // Should we repeat it in the list? Maybe. Let's do it for completeness if requested.
-            if (session.currentFileName.isNotEmpty)
-              _buildFileItem(session.currentFileName, false, true),
-
-            // 2. Queued (Pending)
-            // Check limit
-            Builder(
-              builder: (context) {
-                final queuedToShow = _showAllFiles
-                    ? session.pendingUrls
-                    : session.pendingUrls.take(5);
-                return Column(
-                  children: queuedToShow
-                      .map((u) => _buildFileItem(u, false, false))
-                      .toList(),
-                );
-              },
+            GreenProgressBar(
+              value: s.overallProgress,
+              height: 10,
+              color: s.isPaused ? AppTheme.warning : null,
             ),
-
-            // 3. Completed (Bottom)
-            Builder(
-              builder: (context) {
-                final completedToShow = _showAllFiles
-                    ? session.completedUrls
-                    : session.completedUrls.reversed.take(
-                        5,
-                      ); // Show latest completed if truncated
-                return Column(
-                  children: completedToShow
-                      .map((u) => _buildFileItem(u, true, false))
-                      .toList(),
-                );
-              },
-            ),
-
-            // Show More Button
-            if (!_showAllFiles &&
-                (session.totalFiles > 10 ||
-                    session.pendingUrls.length > 5 ||
-                    session.completedUrls.length > 5))
-              Padding(
-                padding: const EdgeInsets.only(top: 12.0),
-                child: Center(
-                  child: TextButton(
-                    onPressed: () => setState(() => _showAllFiles = true),
-                    child: const Text(
-                      'Show All Files',
-                      style: TextStyle(color: AppTheme.primaryGreen),
-                    ),
-                  ),
-                ),
-              ),
-
-            if (_showAllFiles &&
-                (session.totalFiles > 10 ||
-                    session.pendingUrls.length > 5 ||
-                    session.completedUrls.length > 5))
-              Padding(
-                padding: const EdgeInsets.only(top: 12.0),
-                child: Center(
-                  child: TextButton(
-                    onPressed: () => setState(() => _showAllFiles = false),
-                    child: const Text(
-                      'Show Less',
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  ),
-                ),
-              ),
-
-            const SizedBox(height: 40),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildFileItem(String urlOrName, bool isCompleted, bool isActive) {
-    // Robust Filename Logic
-    String filename = urlOrName;
-    try {
-      // If it looks like a URL, try to extract semantic name
-      if (urlOrName.startsWith('http') || urlOrName.contains('/')) {
-        Uri uri = Uri.parse(urlOrName);
-        // 1. Fragment
-        if (uri.fragment.isNotEmpty) {
-          filename = uri.fragment;
-        }
-        // 2. Last Segment
-        else if (uri.pathSegments.isNotEmpty &&
-            uri.pathSegments.last.isNotEmpty) {
-          filename = uri.pathSegments.last;
-        } else {
-          // Fallback to full path if last segment is empty (e.g., ends with /)
-          filename = uri.path;
-        }
+class _StatsGrid extends StatelessWidget {
+  final DownloadSession session;
+  const _StatsGrid({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    final tiles = [
+      _Stat(
+        LucideIcons.download,
+        'SPEED',
+        formatSpeed(s.networkSpeed),
+        AppTheme.primaryGreen,
+      ),
+      _Stat(LucideIcons.gauge, 'AVERAGE', formatSpeed(s.avgSpeed), null),
+      _Stat(LucideIcons.zap, 'PEAK', formatSpeed(s.peakSpeed), null),
+      _Stat(
+        LucideIcons.files,
+        'FILES',
+        '${s.completedCount} / ${s.totalFiles}',
+        null,
+      ),
+      _Stat(LucideIcons.activity, 'ACTIVE', '${s.activeCount}', null),
+      _Stat(
+        LucideIcons.alertTriangle,
+        'FAILED',
+        '${s.failedCount}',
+        s.failedCount > 0 ? AppTheme.danger : null,
+      ),
+    ];
+    return LayoutBuilder(
+      builder: (context, c) {
+        final columns = c.maxWidth >= 720 ? 6 : (c.maxWidth >= 330 ? 3 : 2);
+        final width = (c.maxWidth - (columns - 1) * 10) / columns;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [for (final t in tiles) SizedBox(width: width, child: t)],
+        );
+      },
+    );
+  }
+}
+
+class _Stat extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? color;
+  const _Stat(this.icon, this.label, this.value, this.color);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceDark,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color ?? AppTheme.textMuted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.6,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color ?? Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _FileAction { pause, resume, retry, prioritize, remove }
+
+class _FileRow extends StatelessWidget {
+  final DownloadSession session;
+  final DownloadFile file;
+  const _FileRow({super.key, required this.session, required this.file});
+
+  @override
+  Widget build(BuildContext context) {
+    final f = file;
+    final style = fileStatusStyle(f);
+    final showBar =
+        f.status == FileStatus.downloading ||
+        (f.status == FileStatus.paused && f.progress > 0);
+
+    final details = <String>[style.label];
+    if (f.status == FileStatus.downloading) {
+      if (f.speed > 0) details.add(formatSpeed(f.speed));
+      if (f.timeRemaining != null && f.timeRemaining!.inSeconds > 0) {
+        details.add(formatDuration(f.timeRemaining));
       }
-      // Decode URL-encoded characters and replace invalid filename characters
-      filename = Uri.decodeFull(
-        filename,
-      ).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').replaceAll('_', ' ');
-
-      // Truncate if too long (visual polish)
-      if (filename.length > 50)
-        filename = '...${filename.substring(filename.length - 47)}';
-    } catch (e) {
-      filename = urlOrName; // Fallback
+    }
+    if (f.expectedSize > 0) {
+      details.add(
+        f.status == FileStatus.completed
+            ? formatBytes(f.expectedSize)
+            : '${formatBytes(f.downloadedBytes)} / ${formatBytes(f.expectedSize)}',
+      );
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
       decoration: BoxDecoration(
-        color: isActive ? Colors.white.withOpacity(0.05) : Colors.transparent,
+        color: f.status.isActive
+            ? AppTheme.primaryGreen.withValues(alpha: 0.04)
+            : AppTheme.surfaceDark,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isActive
-              ? AppTheme.primaryGreen.withOpacity(0.2)
-              : Colors.white.withOpacity(0.02),
+          color: f.status.isActive
+              ? AppTheme.primaryGreen.withValues(alpha: 0.25)
+              : AppTheme.border,
         ),
       ),
       child: Row(
         children: [
-          Container(
-            width: 24,
-            height: 24,
-            decoration: BoxDecoration(
-              color: isCompleted
-                  ? AppTheme.primaryGreen
-                  : (isActive ? Colors.transparent : Colors.grey[900]),
-              shape: BoxShape.circle,
-              border: isCompleted
-                  ? null
-                  : Border.all(
-                      color: isActive
-                          ? AppTheme.primaryGreen
-                          : Colors.grey[700]!,
-                    ),
-            ),
-            child: isCompleted
-                ? const Icon(LucideIcons.check, size: 14, color: Colors.black)
-                : (isActive
-                      ? const Padding(
-                          padding: EdgeInsets.all(4),
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppTheme.primaryGreen,
-                          ),
-                        )
-                      : Icon(
-                          LucideIcons.clock,
-                          size: 12,
-                          color: Colors.grey[700],
-                        )),
-          ),
+          _FileIcon(file: f),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  filename,
-                  style: TextStyle(
-                    color: isCompleted || isActive
-                        ? Colors.white
-                        : Colors.grey[500],
-                    fontWeight: isCompleted || isActive
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                    fontSize: 12,
-                  ),
+                  f.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  isCompleted
-                      ? 'Done'
-                      : (isActive ? 'Downloading...' : 'Queued'),
                   style: TextStyle(
-                    color: isCompleted
-                        ? Colors.grey[600]
-                        : (isActive ? AppTheme.primaryGreen : Colors.grey[800]),
-                    fontSize: 10,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: f.status == FileStatus.completed
+                        ? Colors.white60
+                        : Colors.white,
                   ),
                 ),
-              ],
-            ),
-          ),
-          if (isActive)
-            const Text(
-              '', // Size if known
-              style: TextStyle(color: Colors.grey, fontSize: 10),
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _showCancelConfirmation(
-    BuildContext context,
-    dynamic
-    session, // Passed as dynamic or specific type, here dynamic to avoid import issues if any, but ideally typed
-  ) {
-    bool deleteFiles = false;
-
-    showDialog(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF1E1E1E),
-              title: const Text(
-                'Cancel Download?',
-                style: TextStyle(color: Colors.white),
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Are you sure you want to cancel this download session?',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Checkbox(
-                        value: deleteFiles,
-                        activeColor: Colors.red,
-                        checkColor: Colors.white,
-                        side: const BorderSide(color: Colors.grey),
-                        onChanged: (val) {
-                          setDialogState(() {
-                            deleteFiles = val ?? false;
-                          });
-                        },
-                      ),
-                      const Expanded(
-                        child: Text(
-                          'Delete downloaded items as well',
-                          style: TextStyle(color: Colors.white, fontSize: 13),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('No', style: TextStyle(color: Colors.grey)),
+                const SizedBox(height: 3),
+                Text(
+                  details.join('  •  '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: style.color, fontSize: 11),
                 ),
-                TextButton(
-                  onPressed: () {
-                    // 1. Close dialog (Dialog is on Root Navigator usually)
-                    Navigator.of(dialogContext).pop();
-
-                    // 2. Navigate explicitly to Downloads screen
-                    // This is safer than popping imperative routes when GoRouter is involved
-                    // as it guarantees a valid destination.
-                    context.go('/downloads');
-
-                    // 3. Perform Cancel in background
-                    DownloadService().cancelSession(
-                      session.gameTitle,
-                      deleteFiles: deleteFiles,
-                    );
-                  },
-                  child: const Text(
-                    'Yes, Cancel',
-                    style: TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.bold,
+                if (f.status == FileStatus.failed && f.error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      f.error!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 11,
+                      ),
                     ),
                   ),
-                ),
+                if (showBar) ...[
+                  const SizedBox(height: 6),
+                  GreenProgressBar(
+                    value: f.progress,
+                    height: 3,
+                    color: f.status == FileStatus.paused
+                        ? AppTheme.warning
+                        : null,
+                  ),
+                ],
               ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildStatCard({
-    required IconData icon,
-    required String label,
-    required String value,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF111111),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.black,
-              shape: BoxShape.circle,
             ),
-            child: Icon(icon, size: 16, color: Colors.grey[400]),
           ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  color: Colors.grey[600],
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                value,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
+          ..._actions(context),
         ],
       ),
     );
   }
 
-  // Helper functions
-  String _formatProgressSizeString(String totalSizeStr, double progress) {
-    if (totalSizeStr == 'TBD' || totalSizeStr == 'Unknown') {
-      return '';
-    }
+  List<Widget> _actions(BuildContext context) {
+    final f = file;
+    final service = DownloadService();
+    final title = session.gameTitle;
 
-    try {
-      double totalMB = _parseSizeToMB(totalSizeStr);
-      if (totalMB <= 0) return '';
-      double totalGB = totalMB / 1024;
+    Widget iconButton(IconData icon, String tip, VoidCallback onPressed) =>
+        IconButton(
+          tooltip: tip,
+          visualDensity: VisualDensity.compact,
+          icon: Icon(icon, size: 16),
+          onPressed: onPressed,
+        );
 
-      double downloadedGB = totalGB * progress;
+    if (f.status == FileStatus.completed) return const [SizedBox(width: 8)];
 
-      if (totalGB < 1.0) {
-        // Show in MB
-        return '${(downloadedGB * 1024).toStringAsFixed(1)} MB / ${(totalGB * 1024).toStringAsFixed(1)} MB';
-      }
+    final primary = switch (f.status) {
+      FileStatus.downloading || FileStatus.resolving => iconButton(
+        LucideIcons.pause,
+        'Pause file',
+        () => service.pauseFile(title, f.url),
+      ),
+      FileStatus.paused => iconButton(
+        LucideIcons.play,
+        'Resume file',
+        () => service.resumeFile(title, f.url),
+      ),
+      FileStatus.failed => iconButton(
+        LucideIcons.rotateCcw,
+        'Retry',
+        () => service.resumeFile(title, f.url),
+      ),
+      _ => null,
+    };
 
-      return '${downloadedGB.toStringAsFixed(2)} GB / ${totalGB.toStringAsFixed(2)} GB';
-    } catch (e) {
-      return '';
+    return [
+      ?primary,
+      PopupMenuButton<_FileAction>(
+        tooltip: 'File actions',
+        icon: const Icon(LucideIcons.moreHorizontal, size: 16),
+        onSelected: (a) {
+          switch (a) {
+            case _FileAction.pause:
+              service.pauseFile(title, f.url);
+            case _FileAction.resume:
+            case _FileAction.retry:
+              service.resumeFile(title, f.url);
+            case _FileAction.prioritize:
+              service.prioritizeFile(title, f.url);
+            case _FileAction.remove:
+              service.removeFile(title, f.url);
+          }
+        },
+        itemBuilder: (_) => [
+          if (f.status == FileStatus.queued)
+            const PopupMenuItem(value: _FileAction.pause, child: Text('Pause')),
+          if (f.status == FileStatus.queued || f.status == FileStatus.paused)
+            const PopupMenuItem(
+              value: _FileAction.prioritize,
+              child: Text('Download next'),
+            ),
+          const PopupMenuItem(
+            value: _FileAction.remove,
+            child: Text(
+              'Remove from download',
+              style: TextStyle(color: AppTheme.danger),
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+}
+
+class _FileIcon extends StatelessWidget {
+  final DownloadFile file;
+  const _FileIcon({required this.file});
+
+  @override
+  Widget build(BuildContext context) {
+    const size = 26.0;
+    switch (file.status) {
+      case FileStatus.completed:
+        return Container(
+          width: size,
+          height: size,
+          decoration: const BoxDecoration(
+            color: AppTheme.primaryGreen,
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(LucideIcons.check, size: 14, color: Colors.black),
+        );
+      case FileStatus.downloading:
+        return SizedBox(
+          width: size,
+          height: size,
+          child: CircularProgressIndicator(
+            value: file.progress > 0 ? file.progress : null,
+            strokeWidth: 2.5,
+            backgroundColor: const Color(0xFF2A2A2A),
+          ),
+        );
+      case FileStatus.resolving:
+        return const SizedBox(
+          width: size,
+          height: size,
+          child: Padding(
+            padding: EdgeInsets.all(4),
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.lightBlueAccent,
+            ),
+          ),
+        );
+      case FileStatus.paused:
+        return const _CircleIcon(LucideIcons.pause, AppTheme.warning);
+      case FileStatus.failed:
+        return const _CircleIcon(LucideIcons.x, AppTheme.danger);
+      case FileStatus.queued:
+        return const _CircleIcon(LucideIcons.clock, AppTheme.textMuted);
     }
   }
+}
 
-  double _parseSizeToMB(String sizeStr) {
-    try {
-      String cleanSize = sizeStr.toUpperCase().replaceAll(',', '.');
-      if (cleanSize.contains('GB')) {
-        return (double.tryParse(cleanSize.replaceAll('GB', '').trim()) ?? 0.0) *
-            1024;
-      } else if (cleanSize.contains('MB')) {
-        return double.tryParse(cleanSize.replaceAll('MB', '').trim()) ?? 0.0;
-      }
-    } catch (_) {}
-    return 0.0;
-  }
+class _CircleIcon extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  const _CircleIcon(this.icon, this.color);
 
-  String _formatDuration(Duration d) {
-    if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes.remainder(60)}m';
-    if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds.remainder(60)}s';
-    return '${d.inSeconds}s';
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 26,
+      height: 26,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: color.withValues(alpha: 0.6)),
+      ),
+      child: Icon(icon, size: 13, color: color),
+    );
   }
 }

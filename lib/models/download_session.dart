@@ -1,149 +1,337 @@
-class DownloadSession {
-  final String gameTitle;
-  final String coverUrl;
-  final List<String> pendingUrls;
-  final List<String> completedUrls; // List of original URLs that are done
-  final List<String>
-  activeTaskIds; // Task IDs currently running (should be 1 for sequential)
-  final Map<String, double> fileProgress; // TaskID -> Progress (0.0 - 1.0)
-  final int totalFiles;
-  final double networkSpeed; // MB/s
-  final double avgSpeed; // MB/s (Smoothed average)
-  final double peakSpeed; // MB/s (Max recorded)
-  final String currentFileName;
-  final double currentFileProgress; // 0.0 - 1.0
-  final bool isPaused;
-  final String totalGameSize; // e.g. "35.5 GB"
-  final List<String> originalUrls; // Full list of candidate files from scraping
+import 'package:fitgirl_mobile_flutter/core/utils/format.dart';
 
-  DownloadSession({
-    required this.gameTitle,
-    required this.coverUrl,
-    required this.pendingUrls,
-    required this.totalFiles,
-    this.completedUrls = const [],
-    this.activeTaskIds = const [],
-    this.fileProgress = const {},
-    this.networkSpeed = 0.0,
-    this.avgSpeed = 0.0,
-    this.peakSpeed = 0.0,
-    this.currentFileName = '',
-    this.currentFileProgress = 0.0,
-    this.isPaused = false,
-    this.totalGameSize = 'TBD',
-    this.originalUrls = const [],
+/// Lifecycle of a single file inside a game download.
+enum FileStatus {
+  queued,
+  resolving, // Fetching the direct link from the mirror page
+  downloading,
+  paused,
+  completed,
+  failed;
+
+  bool get isActive => this == resolving || this == downloading;
+  bool get isFinished => this == completed;
+
+  static FileStatus fromName(String? name) => FileStatus.values.firstWhere(
+    (s) => s.name == name,
+    orElse: () => FileStatus.queued,
+  );
+}
+
+/// Aggregate status of a game download, derived from its files.
+enum SessionStatus { downloading, queued, paused, failed, completed }
+
+class DownloadFile {
+  /// Mirror page URL (e.g. fuckingfast.co/xyz#file.part01.rar). Stable key.
+  final String url;
+  final String name;
+  final FileStatus status;
+
+  /// background_downloader task id for the current/last attempt.
+  final String? taskId;
+  final double progress; // 0.0 - 1.0
+  final int expectedSize; // bytes, -1 when unknown
+  final double speed; // MB/s (transient)
+  final Duration? timeRemaining; // transient
+  final String? error;
+  final int attempts;
+
+  const DownloadFile({
+    required this.url,
+    required this.name,
+    this.status = FileStatus.queued,
+    this.taskId,
+    this.progress = 0.0,
+    this.expectedSize = -1,
+    this.speed = 0.0,
+    this.timeRemaining,
+    this.error,
+    this.attempts = 0,
   });
 
-  // Factory to create a new session
+  factory DownloadFile.fromUrl(String url) =>
+      DownloadFile(url: url, name: fileNameFromUrl(url));
+
+  int get downloadedBytes {
+    if (status == FileStatus.completed) {
+      return expectedSize > 0 ? expectedSize : 0;
+    }
+    if (expectedSize <= 0) return 0;
+    return (expectedSize * progress.clamp(0.0, 1.0)).round();
+  }
+
+  DownloadFile copyWith({
+    FileStatus? status,
+    String? taskId,
+    bool clearTaskId = false,
+    double? progress,
+    int? expectedSize,
+    double? speed,
+    Duration? timeRemaining,
+    bool clearTimeRemaining = false,
+    String? error,
+    bool clearError = false,
+    int? attempts,
+  }) {
+    return DownloadFile(
+      url: url,
+      name: name,
+      status: status ?? this.status,
+      taskId: clearTaskId ? null : (taskId ?? this.taskId),
+      progress: progress ?? this.progress,
+      expectedSize: expectedSize ?? this.expectedSize,
+      speed: speed ?? this.speed,
+      timeRemaining: clearTimeRemaining
+          ? null
+          : (timeRemaining ?? this.timeRemaining),
+      error: clearError ? null : (error ?? this.error),
+      attempts: attempts ?? this.attempts,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'url': url,
+    'name': name,
+    'status': status.name,
+    'taskId': taskId,
+    'progress': progress,
+    'expectedSize': expectedSize,
+    'error': error,
+    'attempts': attempts,
+  };
+
+  factory DownloadFile.fromJson(Map<String, dynamic> json) {
+    final url = json['url'] as String;
+    return DownloadFile(
+      url: url,
+      name: (json['name'] as String?) ?? fileNameFromUrl(url),
+      status: FileStatus.fromName(json['status'] as String?),
+      taskId: json['taskId'] as String?,
+      progress: (json['progress'] as num?)?.toDouble() ?? 0.0,
+      expectedSize: (json['expectedSize'] as num?)?.toInt() ?? -1,
+      error: json['error'] as String?,
+      attempts: (json['attempts'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class DownloadSession {
+  final String gameTitle; // Unique key
+  final String coverUrl;
+  final String? gameUrl; // Source page, used to reopen details
+  final String totalGameSize; // e.g. "from 35.5 GB" (as scraped)
+  final List<DownloadFile> files; // Selected files, in download order
+  final List<String> originalUrls; // Every file offered by the mirror
+  final bool isPaused;
+  final DateTime createdAt;
+  final DateTime? completedAt;
+
+  // Transient stats
+  final double avgSpeed; // MB/s
+  final double peakSpeed; // MB/s
+
+  const DownloadSession({
+    required this.gameTitle,
+    required this.coverUrl,
+    required this.files,
+    required this.createdAt,
+    this.gameUrl,
+    this.totalGameSize = 'TBD',
+    this.originalUrls = const [],
+    this.isPaused = false,
+    this.completedAt,
+    this.avgSpeed = 0.0,
+    this.peakSpeed = 0.0,
+  });
+
   factory DownloadSession.create({
     required String gameTitle,
     required String coverUrl,
     required List<String> urls,
+    String? gameUrl,
     String totalGameSize = 'TBD',
     List<String> originalUrls = const [],
   }) {
     return DownloadSession(
       gameTitle: gameTitle,
       coverUrl: coverUrl,
-      pendingUrls: urls,
-      totalFiles: urls.length,
+      gameUrl: gameUrl,
+      files: urls.map(DownloadFile.fromUrl).toList(),
       totalGameSize: totalGameSize,
-      originalUrls: originalUrls.isNotEmpty
-          ? originalUrls
-          : urls, // Fallback to initial selection if not provided
+      originalUrls: originalUrls.isNotEmpty ? originalUrls : urls,
+      createdAt: DateTime.now(),
     );
   }
 
-  // CopyWith for state updates
   DownloadSession copyWith({
-    List<String>? pendingUrls,
-    List<String>? completedUrls,
-    List<String>? activeTaskIds,
-    Map<String, double>? fileProgress,
-    double? networkSpeed,
+    List<DownloadFile>? files,
+    List<String>? originalUrls,
+    bool? isPaused,
+    DateTime? completedAt,
+    bool clearCompletedAt = false,
     double? avgSpeed,
     double? peakSpeed,
-    String? currentFileName,
-    double? currentFileProgress,
-    bool? isPaused,
-    String? totalGameSize,
-    List<String>? originalUrls,
   }) {
     return DownloadSession(
       gameTitle: gameTitle,
       coverUrl: coverUrl,
-      totalFiles: totalFiles,
-      pendingUrls: pendingUrls ?? this.pendingUrls,
-      completedUrls: completedUrls ?? this.completedUrls,
-      activeTaskIds: activeTaskIds ?? this.activeTaskIds,
-      fileProgress: fileProgress ?? this.fileProgress,
-      networkSpeed: networkSpeed ?? this.networkSpeed,
+      gameUrl: gameUrl,
+      totalGameSize: totalGameSize,
+      createdAt: createdAt,
+      files: files ?? this.files,
+      originalUrls: originalUrls ?? this.originalUrls,
+      isPaused: isPaused ?? this.isPaused,
+      completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
       avgSpeed: avgSpeed ?? this.avgSpeed,
       peakSpeed: peakSpeed ?? this.peakSpeed,
-      currentFileName: currentFileName ?? this.currentFileName,
-      currentFileProgress: currentFileProgress ?? this.currentFileProgress,
-      isPaused: isPaused ?? this.isPaused,
-      totalGameSize: totalGameSize ?? this.totalGameSize,
-      originalUrls: originalUrls ?? this.originalUrls,
     );
   }
 
-  // Progress Calculation
+  // ---------------------------------------------------------------------------
+  // Derived state
+  // ---------------------------------------------------------------------------
+
+  int get totalFiles => files.length;
+  int countWhere(FileStatus s) => files.where((f) => f.status == s).length;
+  int get completedCount => countWhere(FileStatus.completed);
+  int get failedCount => countWhere(FileStatus.failed);
+  int get activeCount => files.where((f) => f.status.isActive).length;
+  int get queuedCount => countWhere(FileStatus.queued);
+
+  List<String> get selectedUrls => files.map((f) => f.url).toList();
+  List<String> get completedUrls => files
+      .where((f) => f.status == FileStatus.completed)
+      .map((f) => f.url)
+      .toList();
+
+  bool get isCompleted =>
+      files.isNotEmpty && files.every((f) => f.status == FileStatus.completed);
+
+  /// Files the user still expects to finish (not completed, not failed).
+  bool get hasRemainingWork => files.any(
+    (f) => f.status != FileStatus.completed && f.status != FileStatus.failed,
+  );
+
+  SessionStatus get status {
+    if (isCompleted) return SessionStatus.completed;
+    if (isPaused) return SessionStatus.paused;
+    if (activeCount > 0) return SessionStatus.downloading;
+    if (!hasRemainingWork && failedCount > 0) return SessionStatus.failed;
+    return SessionStatus.queued;
+  }
+
+  double get networkSpeed => files
+      .where((f) => f.status == FileStatus.downloading)
+      .fold(0.0, (sum, f) => sum + f.speed);
+
+  /// Byte-accurate progress when sizes are known, file-count based otherwise.
   double get overallProgress {
-    if (totalFiles == 0) return 0.0;
-
-    // Add 1.0 for every completed file
-    double total = completedUrls.length.toDouble();
-
-    // Add current progress of active files
-    for (var taskId in activeTaskIds) {
-      total += (fileProgress[taskId] ?? 0.0);
+    if (files.isEmpty) return 0.0;
+    double total = 0;
+    for (final f in files) {
+      total += f.status == FileStatus.completed ? 1.0 : f.progress.clamp(0, 1);
     }
+    return (total / files.length).clamp(0.0, 1.0);
+  }
 
-    // Fallback: If currentFileProgress is set but map isn't (from service update)
-    if (currentFileProgress > 0 && activeTaskIds.isNotEmpty) {
-      if (fileProgress.isEmpty) {
-        total += currentFileProgress;
+  int get downloadedBytes => files.fold(0, (s, f) => s + f.downloadedBytes);
+
+  /// Estimated total bytes of the selection. Uses known sizes and fills unknown
+  /// ones with the average known size (FitGirl parts are usually equal).
+  int get estimatedTotalBytes {
+    final known = files.where((f) => f.expectedSize > 0).toList();
+    if (known.isEmpty) return -1;
+    final avg = known.fold<int>(0, (s, f) => s + f.expectedSize) / known.length;
+    return files.fold<int>(
+      0,
+      (s, f) => s + (f.expectedSize > 0 ? f.expectedSize : avg.round()),
+    );
+  }
+
+  Duration? get eta {
+    final speed = networkSpeed;
+    final total = estimatedTotalBytes;
+    if (speed <= 0 || total <= 0) return null;
+    final remaining = total - downloadedBytes;
+    if (remaining <= 0) return null;
+    return Duration(seconds: (remaining / (speed * 1024 * 1024)).round());
+  }
+
+  DownloadFile? fileForTask(String taskId) {
+    for (final f in files) {
+      if (f.taskId == taskId) return f;
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Persistence
+  // ---------------------------------------------------------------------------
+
+  Map<String, dynamic> toJson() => {
+    'version': 2,
+    'gameTitle': gameTitle,
+    'coverUrl': coverUrl,
+    'gameUrl': gameUrl,
+    'totalGameSize': totalGameSize,
+    'files': files.map((f) => f.toJson()).toList(),
+    'originalUrls': originalUrls,
+    'isPaused': isPaused,
+    'createdAt': createdAt.toIso8601String(),
+    'completedAt': completedAt?.toIso8601String(),
+    'avgSpeed': avgSpeed,
+    'peakSpeed': peakSpeed,
+  };
+
+  factory DownloadSession.fromJson(Map<String, dynamic> json) {
+    List<DownloadFile> files;
+    if (json['files'] is List) {
+      files = (json['files'] as List)
+          .map((e) => DownloadFile.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    } else {
+      // Legacy (v1) format: pendingUrls / completedUrls / activeTaskIds.
+      // Active task URLs were only stored in task metadata, so anything that
+      // was in flight is re-queued; the service reconciles it on startup.
+      final completed = List<String>.from(json['completedUrls'] ?? []);
+      final pending = List<String>.from(json['pendingUrls'] ?? []);
+      final original = List<String>.from(json['originalUrls'] ?? []);
+      final known = {...completed, ...pending};
+      files = [
+        ...completed.map(
+          (u) => DownloadFile.fromUrl(
+            u,
+          ).copyWith(status: FileStatus.completed, progress: 1.0),
+        ),
+        ...pending.map(DownloadFile.fromUrl),
+      ];
+      // Legacy sessions tracked totalFiles; recover in-flight files that were
+      // neither pending nor completed from the original list.
+      final legacyTotal = (json['totalFiles'] as num?)?.toInt() ?? 0;
+      if (files.length < legacyTotal) {
+        for (final u in original) {
+          if (files.length >= legacyTotal) break;
+          if (!known.contains(u)) {
+            files.insert(completed.length, DownloadFile.fromUrl(u));
+          }
+        }
       }
     }
 
-    return total / totalFiles;
-  }
-
-  bool get isCompleted => completedUrls.length == totalFiles;
-
-  // JSON Serialization for persistence
-  Map<String, dynamic> toJson() {
-    return {
-      'gameTitle': gameTitle,
-      'coverUrl': coverUrl,
-      'pendingUrls': pendingUrls,
-      'completedUrls': completedUrls,
-      'activeTaskIds': activeTaskIds,
-      'totalFiles': totalFiles,
-      'totalGameSize': totalGameSize,
-      'peakSpeed': peakSpeed, // Persist peak speed
-      // We don't necessarily persist avgSpeed/networkSpeed as they are transient?
-      // User requested "Restored upon app's reopen". So yes, persist them.
-      'avgSpeed': avgSpeed,
-      'originalUrls': originalUrls,
-    };
-  }
-
-  factory DownloadSession.fromJson(Map<String, dynamic> json) {
     return DownloadSession(
-      gameTitle: json['gameTitle'],
-      coverUrl: json['coverUrl'],
-      pendingUrls: List<String>.from(json['pendingUrls'] ?? []),
-      completedUrls: List<String>.from(json['completedUrls'] ?? []),
-      activeTaskIds: List<String>.from(json['activeTaskIds'] ?? []),
-      totalFiles: json['totalFiles'] ?? 0,
-      totalGameSize: json['totalGameSize'] ?? 'TBD',
-      peakSpeed: (json['peakSpeed'] ?? 0.0).toDouble(),
-      avgSpeed: (json['avgSpeed'] ?? 0.0).toDouble(),
+      gameTitle: json['gameTitle'] as String,
+      coverUrl: (json['coverUrl'] as String?) ?? '',
+      gameUrl: json['gameUrl'] as String?,
+      totalGameSize: (json['totalGameSize'] as String?) ?? 'TBD',
+      files: files,
       originalUrls: List<String>.from(json['originalUrls'] ?? []),
-      fileProgress:
-          {}, // Reset progress on load (unless we map it from active tasks)
+      isPaused: (json['isPaused'] as bool?) ?? false,
+      createdAt:
+          DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      completedAt: DateTime.tryParse(json['completedAt'] as String? ?? ''),
+      avgSpeed: (json['avgSpeed'] as num?)?.toDouble() ?? 0.0,
+      peakSpeed: (json['peakSpeed'] as num?)?.toDouble() ?? 0.0,
     );
   }
 }

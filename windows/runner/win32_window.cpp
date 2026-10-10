@@ -207,6 +207,15 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
     }
 
+    case WM_GETMINMAXINFO: {
+      // Keep the window large enough for the desktop layout to stay usable.
+      const double scale = FlutterDesktopGetDpiForHWND(hwnd) / 96.0;
+      auto info = reinterpret_cast<MINMAXINFO*>(lparam);
+      info->ptMinTrackSize.x = static_cast<LONG>(480 * scale);
+      info->ptMinTrackSize.y = static_cast<LONG>(600 * scale);
+      return 0;
+    }
+
     case WM_ACTIVATE:
       if (child_content_ != nullptr) {
         SetFocus(child_content_);

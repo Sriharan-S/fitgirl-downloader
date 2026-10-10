@@ -54,10 +54,12 @@ class _SuccessActionDialogState extends State<SuccessActionDialog>
           decoration: BoxDecoration(
             color: AppTheme.surfaceDark,
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: AppTheme.primaryGreen.withOpacity(0.5)),
+            border: Border.all(
+              color: AppTheme.primaryGreen.withValues(alpha: 0.5),
+            ),
             boxShadow: [
               BoxShadow(
-                color: AppTheme.primaryGreen.withOpacity(0.2),
+                color: AppTheme.primaryGreen.withValues(alpha: 0.2),
                 blurRadius: 20,
                 spreadRadius: 2,
               ),
@@ -71,7 +73,7 @@ class _SuccessActionDialogState extends State<SuccessActionDialog>
                 width: 80,
                 height: 80,
                 decoration: BoxDecoration(
-                  color: AppTheme.primaryGreen.withOpacity(0.1),
+                  color: AppTheme.primaryGreen.withValues(alpha: 0.1),
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
@@ -101,7 +103,7 @@ class _SuccessActionDialogState extends State<SuccessActionDialog>
                     widget.subtitle!,
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: Colors.white.withOpacity(0.7),
+                      color: Colors.white.withValues(alpha: 0.7),
                       fontSize: 12,
                     ),
                   ),
