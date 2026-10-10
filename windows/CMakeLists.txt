@@ -57,6 +57,20 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Workaround: permission_handler_windows <= 0.2.2 compiles with the legacy
+# /await option, which Visual Studio 2026 rejects (error STL1011). The target
+# already builds as C++20, so standard coroutines work without it.
+# Remove once https://github.com/Baseflow/flutter-permission-handler/pull/1569
+# is released.
+if(TARGET permission_handler_windows_plugin)
+  get_target_property(_ph_opts permission_handler_windows_plugin COMPILE_OPTIONS)
+  if(_ph_opts)
+    list(REMOVE_ITEM _ph_opts "/await")
+    set_target_properties(permission_handler_windows_plugin
+      PROPERTIES COMPILE_OPTIONS "${_ph_opts}")
+  endif()
+endif()
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can

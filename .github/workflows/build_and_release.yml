@@ -59,7 +59,14 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-        run: flutter pub get && flutter build apk --release
+        run: |
+          flutter pub get
+          # Surface build errors as annotations (job logs need repo access)
+          flutter build apk --release 2>&1 | tee build.log; status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -iE "error|failed|What went wrong" -A3 build.log | head -40 | sed 's/^/::error::/'
+            exit "$status"
+          fi
         
       - name: Rename Artifact
         run: mv build/app/outputs/flutter-apk/app-release.apk FitGirl-Downloader-${{ needs.get-version.outputs.version }}-android-universal.apk
@@ -115,7 +122,15 @@ jobs:
           cache: true
       
       - name: Build Windows
-        run: flutter pub get && flutter build windows --release
+        shell: bash
+        run: |
+          flutter pub get
+          # Surface compiler errors as annotations (job logs need repo access)
+          flutter build windows --release 2>&1 | tee build.log; status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -iE "error|failed" build.log | head -25 | sed 's/^/::error::/'
+            exit "$status"
+          fi
 
       - name: Create Installer (Inno Setup)
         run: |
