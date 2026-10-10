@@ -1,5 +1,5 @@
+import 'package:fitgirl_mobile_flutter/services/web_client.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as parser;
 import 'package:html/dom.dart';
 
@@ -20,10 +20,19 @@ class ScraperService {
 
   ScraperService._internal();
 
+  WebClient _web = WebClient();
+
+  @visibleForTesting
+  set client(WebClient client) => _web = client;
+
+  // Game pages are fetched by lists and again by the details screen.
+  final Map<String, (DateTime, Game)> _detailsCache = {};
+  static const _detailsTtl = Duration(minutes: 15);
+
   /// Streams popular games one by one
   Stream<Game> streamPopularGames() async* {
     try {
-      final response = await http.get(Uri.parse(_popularUrl));
+      final response = await _web.get(Uri.parse(_popularUrl));
       if (response.statusCode != 200) {
         throw Exception('Failed to load popular games');
       }
@@ -67,9 +76,7 @@ class ScraperService {
 
   Future<void> _ensureRecentPosts(int needed) async {
     if (_sitemapUrls == null) {
-      final indexResponse = await http
-          .get(Uri.parse(_sitemapIndexUrl))
-          .timeout(const Duration(seconds: 20));
+      final indexResponse = await _web.get(Uri.parse(_sitemapIndexUrl));
       if (indexResponse.statusCode != 200) {
         throw Exception('Failed to load sitemap index');
       }
@@ -89,9 +96,9 @@ class ScraperService {
     final seen = _recentPostUrls.toSet();
     while (_recentPostUrls.length < needed &&
         _sitemapCursor < _sitemapUrls!.length) {
-      final mapResponse = await http
-          .get(Uri.parse(_sitemapUrls![_sitemapCursor++]))
-          .timeout(const Duration(seconds: 20));
+      final mapResponse = await _web.get(
+        Uri.parse(_sitemapUrls![_sitemapCursor++]),
+      );
       if (mapResponse.statusCode != 200) continue;
       final mapDoc = XmlDocument.parse(mapResponse.body);
       final urls = mapDoc
@@ -160,13 +167,21 @@ class ScraperService {
     return 0;
   }
 
-  /// Scrapes details for a single game page
+  /// Scrapes details for a single game page (cached for a few minutes).
   Future<Game?> getGameDetails(String url) async {
+    final cached = _detailsCache[url];
+    if (cached != null && DateTime.now().difference(cached.$1) < _detailsTtl) {
+      return cached.$2;
+    }
+    final game = await _fetchGameDetails(url);
+    if (game != null) _detailsCache[url] = (DateTime.now(), game);
+    return game;
+  }
+
+  Future<Game?> _fetchGameDetails(String url) async {
     debugPrint('ScraperService: Fetching $url');
     try {
-      final response = await http
-          .get(Uri.parse(url))
-          .timeout(const Duration(seconds: 15));
+      final response = await _web.get(Uri.parse(url));
       debugPrint(
         'ScraperService: Response status for $url: ${response.statusCode}',
       );
@@ -432,9 +447,7 @@ class ScraperService {
     debugPrint('ScraperService: Searching for "$query"');
     try {
       final url = '$_baseUrl/?s=${Uri.encodeComponent(query)}';
-      final response = await http
-          .get(Uri.parse(url))
-          .timeout(const Duration(seconds: 15));
+      final response = await _web.get(Uri.parse(url));
 
       if (response.statusCode != 200) {
         throw Exception('Failed to load search results');
@@ -507,9 +520,7 @@ class ScraperService {
   Future<List<String>> getMirrorFileList(String url) async {
     debugPrint('ScraperService: Fetching file list from $url');
     try {
-      final response = await http
-          .get(Uri.parse(url))
-          .timeout(const Duration(seconds: 15));
+      final response = await _web.get(Uri.parse(url));
 
       if (response.statusCode != 200) {
         return [];
@@ -573,7 +584,7 @@ class ScraperService {
 
   Future<String?> _getFuckingFastLink(String url) async {
     try {
-      final response = await http.get(
+      final response = await _web.get(
         Uri.parse(url),
         headers: {
           'User-Agent':
@@ -597,7 +608,7 @@ class ScraperService {
 
   Future<String?> _getDataNodesLink(String url) async {
     try {
-      final response = await http.get(
+      final response = await _web.get(
         Uri.parse(url),
         headers: {
           'User-Agent':
@@ -627,17 +638,15 @@ class ScraperService {
   Future<List<String>> getPastebinLinks(String url) async {
     debugPrint('ScraperService: Fetching pastebin links from $url');
     try {
-      final response = await http
-          .get(
-            Uri.parse(url),
-            headers: {
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-              'Accept':
-                  'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await _web.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        },
+      );
 
       debugPrint(
         'ScraperService: Pastebin response status: ${response.statusCode}, body length: ${response.body.length}',
